@@ -63,14 +63,15 @@ if __name__ in {"__main__", "__mp_main__"}:
 
     # Run in native desktop mode
     ui.run(
-        native=True,              # Desktop mode via pywebview
+        native=False,              # Desktop mode via pywebview
         window_size=(1400, 900),  # Window dimensions
         fullscreen=False,
         title="AI Trading Bot",
         favicon="🤖",
         dark=True,                # Dark theme
         reload=False,             # Disable hot reload in production
-        show=True,                # Show window immediately
+        show=False,                # Show window immediately
         port=8080,                # Default port
         binding_refresh_interval=0.1  # Faster UI updates
     )
+
