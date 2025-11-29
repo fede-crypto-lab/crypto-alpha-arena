@@ -1,5 +1,5 @@
 """
-AI Trading Bot - NiceGUI Desktop Application
+AI Trading Bot - NiceGUI Web Application
 Entry point for the application
 """
 
@@ -21,7 +21,8 @@ def signal_handler(signum, frame):
 def cleanup():
     """Cleanup function called on exit"""
     global bot_service_ref
-    if bot_service_ref and bot_service_ref.is_running():
+    # Check if bot_service_ref exists and has running method before stopping
+    if bot_service_ref and hasattr(bot_service_ref, 'is_running') and bot_service_ref.is_running():
         print("[INFO] Stopping bot engine...")
         try:
             # Run the async stop in a new event loop if needed
@@ -61,17 +62,15 @@ if __name__ in {"__main__", "__mp_main__"}:
 
     app.on_shutdown(on_app_shutdown)
 
-    # Run in native desktop mode
+    # Run in WEB SERVER mode
+    # NOTE: native=False is critical for Railway/Docker environments
     ui.run(
-        native=False,              # Desktop mode via pywebview
-        window_size=(1400, 900),  # Window dimensions
-        fullscreen=False,
+        native=False,             # DISABLE native desktop window
         title="AI Trading Bot",
         favicon="🤖",
         dark=True,                # Dark theme
         reload=False,             # Disable hot reload in production
-        show=False,                # Show window immediately
-        port=8080,                # Default port
+        show=False,               # Do not try to open browser automatically
+        port=8080,                # Default port for Railway
         binding_refresh_interval=0.1  # Faster UI updates
     )
-
