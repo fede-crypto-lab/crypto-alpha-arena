@@ -15,10 +15,13 @@ def create_dashboard(bot_service: BotService, state_manager: StateManager):
 
     # ===== METRICS CARDS (4 cards in grid) =====
     with ui.grid(columns=4).classes('w-full gap-4 mb-6'):
-        # Card 1: Total Balance
+        # Card 1: Balance (Total + Available)
         with ui.card().classes('metric-card'):
             balance_value = ui.label('$0.00').classes('text-4xl font-bold text-white')
-            ui.label('Total Balance').classes('text-sm text-gray-200 mt-2')
+            ui.label('Total Balance').classes('text-sm text-gray-200 mt-1')
+            with ui.row().classes('items-center gap-1 mt-1'):
+                ui.label('Available:').classes('text-xs text-gray-400')
+                available_value = ui.label('$0.00').classes('text-xs text-green-400')
 
         # Card 2: Total Return
         with ui.card().classes('metric-card'):
@@ -219,8 +222,10 @@ def create_dashboard(bot_service: BotService, state_manager: StateManager):
         try:
             state = state_manager.get_state()
 
-            # Update metrics cards
-            balance_value.text = f'${state.balance:,.2f}'
+            # Update metrics cards - show total account value and available balance
+            total_val = state.total_value if state.total_value else state.balance
+            balance_value.text = f'${total_val:,.2f}'
+            available_value.text = f'${state.balance:,.2f}'
 
             # Return with color coding
             return_pct = state.total_return_pct
