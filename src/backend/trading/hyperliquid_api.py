@@ -329,7 +329,11 @@ class HyperliquidAPI:
         """
         state = await self._retry(lambda: self.info.user_state(self.wallet.address))
         positions = state.get("assetPositions", [])
-        total_value = float(state.get("accountValue", 0.0))
+        
+        # Hyperliquid returns accountValue in crossMarginSummary
+        cross_margin = state.get("crossMarginSummary", {})
+        total_value = float(cross_margin.get("accountValue", 0.0) or state.get("accountValue", 0.0))
+        
         enriched_positions = []
         for pos_wrap in positions:
             pos = pos_wrap["position"]
@@ -341,7 +345,10 @@ class HyperliquidAPI:
             pos["pnl"] = pnl
             pos["notional_entry"] = abs(size) * entry_px
             enriched_positions.append(pos)
-        balance = float(state.get("withdrawable", 0.0))
+        
+        # withdrawable is also in crossMarginSummary
+        balance = float(cross_margin.get("withdrawable", 0.0) or state.get("withdrawable", 0.0))
+        
         if not total_value:
             total_value = balance + sum(max(p.get("pnl", 0.0), 0.0) for p in enriched_positions)
         return {"balance": balance, "total_value": total_value, "positions": enriched_positions}
