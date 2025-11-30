@@ -171,7 +171,9 @@ def create_reasoning(bot_service: BotService, state_manager: StateManager):
                                         ui.label(f'Allocation: ${allocation:,.2f}')
                                         ui.label(f'TP: {tp_price if tp_price else "N/A"}')
                                         ui.label(f'SL: {sl_price if sl_price else "N/A"}')
-                                        ui.label(f'Exit Plan: {exit_plan[:50]}...' if len(str(exit_plan)) > 50 else f'Exit Plan: {exit_plan}', column_span=2)
+                                    # Exit plan on separate line (full width)
+                                    exit_text = f'Exit Plan: {exit_plan[:50]}...' if len(str(exit_plan)) > 50 else f'Exit Plan: {exit_plan}'
+                                    ui.label(exit_text).classes('text-xs text-gray-400')
                     else:
                         ui.label(f'No {action_filter.value} decisions in current batch').classes('text-gray-400 text-center py-4')
                 else:
