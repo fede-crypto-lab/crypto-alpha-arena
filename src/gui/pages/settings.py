@@ -251,19 +251,22 @@ def create_settings(bot_service: BotService, state_manager: StateManager):
 
                             # Update environment variables temporarily for testing
                             if taapi_input.value:
+                                CONFIG['taapi_api_key'] = taapi_input.value
                                 os.environ['TAAPI_API_KEY'] = taapi_input.value
                             if hyperliquid_input.value:
+                                CONFIG['hyperliquid_private_key'] = hyperliquid_input.value
                                 os.environ['HYPERLIQUID_PRIVATE_KEY'] = hyperliquid_input.value
                             if openrouter_input.value:
+                                CONFIG['openrouter_api_key'] = openrouter_input.value
                                 os.environ['OPENROUTER_API_KEY'] = openrouter_input.value
 
                             # Test connections via bot service
                             results = await bot_service.test_api_connections()
 
                             # Update status indicators
-                            taapi_status.text = f"TAAPI: {'🟢 Connected' if results.get('TAAPI', False) else '🔴 Failed'}"
-                            hyperliquid_status.text = f"Hyperliquid: {'🟢 Connected' if results.get('Hyperliquid', False) else '🔴 Failed'}"
-                            openrouter_status.text = f"OpenRouter: {'🟢 Connected' if results.get('OpenRouter', False) else '🔴 Failed'}"
+                            taapi_status.text = f"TAAPI: {'🟢 Connected' if results.get('taapi', False) else '🔴 Failed'}"
+                            hyperliquid_status.text = f"Hyperliquid: {'🟢 Connected' if results.get('hyperliquid', False) else '🔴 Failed'}"
+                            openrouter_status.text = f"OpenRouter: {'🟢 Connected' if results.get('openrouter', False) else '🔴 Failed'}"
 
                             # Show summary notification
                             connected_count = sum(1 for v in results.values() if v)
@@ -526,3 +529,4 @@ def create_settings(bot_service: BotService, state_manager: StateManager):
 
     # Schedule initial config load
     asyncio.create_task(load_initial_config())
+
