@@ -22,10 +22,14 @@ def create_header(state_manager: StateManager):
 
             # Quick metrics
             with ui.row().classes('gap-8'):
-                # Balance
+                # Balance (Total + Available)
                 with ui.column().classes('text-center'):
                     balance_label = ui.label('$0.00').classes('text-xl font-bold text-white')
-                    ui.label('Balance').classes('text-xs text-gray-400')
+                    with ui.row().classes('items-center gap-1 justify-center'):
+                        ui.label('Balance').classes('text-xs text-gray-400')
+                        ui.label('|').classes('text-xs text-gray-600')
+                        available_label = ui.label('$0.00').classes('text-xs text-green-400')
+                        ui.label('avail').classes('text-xs text-gray-500')
 
                 # 24h PnL
                 with ui.column().classes('text-center'):
@@ -45,8 +49,10 @@ def create_header(state_manager: StateManager):
             async def update_header():
                 state = state_manager.get_state()
 
-                # Update balance
-                balance_label.text = f"${state.balance:,.2f}"
+                # Update balance - show total account value and available
+                total_val = state.total_value if state.total_value else state.balance
+                balance_label.text = f"${total_val:,.2f}"
+                available_label.text = f"${state.balance:,.2f}"
 
                 # Update PnL with color coding
                 pnl_pct = state.total_return_pct
