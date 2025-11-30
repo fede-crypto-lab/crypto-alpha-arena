@@ -45,9 +45,9 @@ def create_reasoning(bot_service: BotService, state_manager: StateManager):
 
                 ui.button('⬇️ Export JSON', on_click=export_json).props('size=sm')
 
-        # JSON display container with fixed height
-        with ui.element('div').classes('w-full h-80 overflow-auto bg-gray-900 rounded p-2 mt-4'):
-            json_display = ui.html('<pre id="json-content" class="text-xs text-green-400 whitespace-pre-wrap">{}</pre>')
+        # JSON display with ui.code - proper height container
+        with ui.column().classes('w-full'):
+            json_display = ui.code('{}', language='json').classes('w-full').style('height: 320px; overflow: auto;')
 
     # ===== TIMELINE FILTERS =====
     with ui.card().classes('w-full p-4 mb-6'):
@@ -87,12 +87,9 @@ def create_reasoning(bot_service: BotService, state_manager: StateManager):
                 # Limit to 10KB to avoid WebSocket issues
                 if len(json_str) > 10000:
                     json_str = json_str[:10000] + '\n... (truncated)'
-                # Escape HTML entities and update
-                import html
-                escaped_json = html.escape(json_str)
-                json_display.content = f'<pre class="text-xs text-green-400 whitespace-pre-wrap">{escaped_json}</pre>'
+                json_display.content = json_str
             except Exception as e:
-                json_display.content = f'<pre class="text-xs text-red-400">Error: {html.escape(str(e))}</pre>'
+                json_display.content = f'{{"error": "{str(e)}"}}'
 
             # Update timeline with filtering
             timeline_container.clear()
@@ -185,7 +182,7 @@ def create_reasoning(bot_service: BotService, state_manager: StateManager):
                     ui.label('No trade decisions yet').classes('text-gray-400 text-center py-4')
         else:
             # Empty state
-            json_display.content = '<pre class="text-xs text-gray-500">{}</pre>'
+            json_display.content = '{}'
             timeline_container.clear()
 
             # Update stats in empty state
