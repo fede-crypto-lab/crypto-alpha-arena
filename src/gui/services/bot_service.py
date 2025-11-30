@@ -344,14 +344,16 @@ class BotService:
             if self.state_manager:
                 self.state_manager.update(state)
 
-            # Track equity history for charting
-            self.equity_history.append({
-                'time': state.last_update,
-                'value': state.total_value or state.balance
-            })
-            # Keep only last 500 points
-            if len(self.equity_history) > 500:
-                self.equity_history = self.equity_history[-500:]
+            # Track equity history for charting (only add if value is positive)
+            equity_value = state.total_value or state.balance
+            if equity_value and equity_value > 0:
+                self.equity_history.append({
+                    'time': state.last_update,
+                    'value': equity_value
+                })
+                # Keep only last 500 points
+                if len(self.equity_history) > 500:
+                    self.equity_history = self.equity_history[-500:]
 
             # Add event to activity feed
             self._add_event(f"📊 Market data refreshed - Balance: ${state.balance:,.2f}")
@@ -459,15 +461,17 @@ class BotService:
         if self.state_manager:
             self.state_manager.update(state)
 
-        # Track equity history for charting
-        self.equity_history.append({
-            'time': state.last_update or datetime.utcnow().isoformat(),
-            'value': state.total_value
-        })
+        # Track equity history for charting (only add if value is positive)
+        equity_value = state.total_value or state.balance
+        if equity_value and equity_value > 0:
+            self.equity_history.append({
+                'time': state.last_update or datetime.utcnow().isoformat(),
+                'value': equity_value
+            })
 
-        # Keep only last 500 points
-        if len(self.equity_history) > 500:
-            self.equity_history = self.equity_history[-500:]
+            # Keep only last 500 points
+            if len(self.equity_history) > 500:
+                self.equity_history = self.equity_history[-500:]
 
     def _on_trade_executed(self, trade: Dict):
         """
