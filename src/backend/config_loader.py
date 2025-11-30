@@ -2,9 +2,22 @@
 
 import json
 import os
+import logging
 from dotenv import load_dotenv
 
+# Setup logging
+logging.basicConfig(level=logging.DEBUG)
+logger = logging.getLogger(__name__)
+
 load_dotenv()
+
+# Debug: print all relevant env vars at startup
+logger.info("=== CONFIG LOADER DEBUG ===")
+logger.info(f"TAAPI_API_KEY present: {bool(os.getenv('TAAPI_API_KEY'))}")
+logger.info(f"HYPERLIQUID_PRIVATE_KEY present: {bool(os.getenv('HYPERLIQUID_PRIVATE_KEY'))}")
+logger.info(f"OPENROUTER_API_KEY present: {bool(os.getenv('OPENROUTER_API_KEY'))}")
+logger.info(f"ASSETS: {os.getenv('ASSETS')}")
+logger.info("=== END DEBUG ===")
 
 
 def _get_env(name: str, default: str | None = None, required: bool = False) -> str | None:
