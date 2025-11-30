@@ -169,8 +169,11 @@ class TradingBotEngine:
                     total_value = state['total_value']
 
                     # Calculate total return
-                    initial_balance = 10000.0  # TODO: load from config
-                    total_return_pct = ((total_value - initial_balance) / initial_balance) * 100
+                    initial_balance = self.initial_account_value or total_value
+                    if initial_balance > 0:
+                        total_return_pct = ((total_value - initial_balance) / initial_balance) * 100
+                    else:
+                        total_return_pct = 0.0
 
                     sharpe_ratio = self._calculate_sharpe(self.trade_log)
                     
