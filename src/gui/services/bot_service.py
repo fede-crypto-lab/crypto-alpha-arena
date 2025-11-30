@@ -298,11 +298,46 @@ class BotService:
             else:
                 state = self.bot_engine.get_state()
 
+            # Enrich positions to match expected format
+            raw_positions = user_state.get('positions', [])
+            enriched_positions = []
+            for pos in raw_positions:
+                symbol = pos.get('coin', '')
+                quantity = float(pos.get('szi', 0) or 0)
+                entry_price = float(pos.get('entryPx', 0) or 0)
+                
+                # Get current price for this asset
+                current_price = 0
+                if symbol in market_data and market_data[symbol].get('price'):
+                    current_price = market_data[symbol]['price']
+                
+                enriched_positions.append({
+                    'symbol': symbol,
+                    'quantity': quantity,
+                    'entry_price': entry_price,
+                    'current_price': current_price,
+                    'liquidation_price': float(pos.get('liquidationPx', 0) or 0),
+                    'unrealized_pnl': pos.get('pnl', 0.0),
+                    'leverage': pos.get('leverage', {}).get('value', 1) if isinstance(pos.get('leverage'), dict) else pos.get('leverage', 1)
+                })
+
             # Update with fresh market data
             state.balance = user_state.get('balance', state.balance)
             state.total_value = user_state.get('total_value', state.total_value)
-            state.positions = user_state.get('positions', state.positions)
-            state.market_data = market_data
+            state.positions = enriched_positions
+            
+            # Convert market_data dict to list format expected by dashboard
+            market_data_list = []
+            for asset, data in market_data.items():
+                market_data_list.append({
+                    'asset': asset,
+                    'current_price': data.get('price', 0) or 0,
+                    'funding_rate': data.get('funding_rate', 0),
+                    'open_interest': data.get('open_interest', 0),
+                    'intraday': {},  # No TAAPI data when bot not running
+                    'long_term': {}
+                })
+            state.market_data = market_data_list
             state.last_update = datetime.utcnow().isoformat()
 
             # Update state manager
