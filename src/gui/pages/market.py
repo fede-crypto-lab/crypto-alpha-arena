@@ -12,6 +12,9 @@ def create_market(bot_service: BotService, state_manager: StateManager):
     """Create market data page with live prices and technical indicators"""
 
     ui.label('Market Data').classes('text-3xl font-bold mb-4 text-white')
+    
+    # Price history storage per asset
+    price_history = {'BTC': [], 'ETH': [], 'SOL': []}
 
     # ===== ASSET SELECTOR =====
     with ui.row().classes('w-full items-center gap-4 mb-6'):
@@ -60,15 +63,14 @@ def create_market(bot_service: BotService, state_manager: StateManager):
     with ui.card().classes('w-full p-4 mb-6'):
         ui.label('Price Chart').classes('text-xl font-bold text-white mb-2')
 
-        # Candlestick chart
+        # Line chart for price history
         price_chart = ui.plotly(go.Figure(
-            data=[go.Candlestick(
+            data=[go.Scatter(
                 x=[],
-                open=[],
-                high=[],
-                low=[],
-                close=[],
-                name='Price'
+                y=[],
+                mode='lines',
+                name='Price',
+                line=dict(color='#10b981', width=2)
             )],
             layout=go.Layout(
                 template='plotly_dark',
@@ -79,7 +81,7 @@ def create_market(bot_service: BotService, state_manager: StateManager):
                 paper_bgcolor='#1f2937',
                 plot_bgcolor='#1f2937',
                 font=dict(color='#e5e7eb'),
-                showlegend=True
+                showlegend=False
             )
         )).classes('w-full')
 
@@ -221,6 +223,34 @@ def create_market(bot_service: BotService, state_manager: StateManager):
         # Update price cards with real data
         current_price = market_data.get('price') or market_data.get('current_price', 0)
         current_price_label.set_text(f'${current_price:,.2f}')
+        
+        # Track price history for chart
+        if current_price and current_price > 0:
+            from datetime import datetime
+            selected_asset = asset_select.value
+            if selected_asset not in price_history:
+                price_history[selected_asset] = []
+            
+            price_history[selected_asset].append({
+                'time': datetime.utcnow().strftime('%H:%M:%S'),
+                'price': current_price
+            })
+            # Keep only last 50 points
+            if len(price_history[selected_asset]) > 50:
+                price_history[selected_asset] = price_history[selected_asset][-50:]
+            
+            # Update price chart
+            history = price_history[selected_asset]
+            if len(history) > 1:
+                times = [p['time'] for p in history]
+                prices = [p['price'] for p in history]
+                price_chart.figure.data[0].x = times
+                price_chart.figure.data[0].y = prices
+                # Auto-scale Y axis
+                min_price = min(prices) * 0.999
+                max_price = max(prices) * 1.001
+                price_chart.figure.layout.yaxis.range = [min_price, max_price]
+                price_chart.update()
         
         # 24h change (mock for now - need to calculate from price history)
         change_24h_label.set_text('+0.00%')
