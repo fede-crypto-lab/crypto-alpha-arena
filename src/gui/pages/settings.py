@@ -133,7 +133,10 @@ def create_settings(bot_service: BotService, state_manager: StateManager):
                             'x-ai/grok-4',
                             'openai/gpt-4',
                             'anthropic/claude-3.5-sonnet',
-                            'deepseek/deepseek-chat-v3.1'
+                            'deepseek/deepseek-chat-v3.1',
+                            'google/gemini-3-pro-preview',
+                            'google/gemini-2.5-pro',
+                            'google/gemini-2.5-flash',
                         ],
                         value=config_data['strategy']['llm_model']
                     ).classes('w-full')
