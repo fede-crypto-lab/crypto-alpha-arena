@@ -16,8 +16,8 @@ def create_reasoning(bot_service: BotService, state_manager: StateManager):
     ui.label('AI Reasoning').classes('text-3xl font-bold mb-4 text-white')
 
     # ===== JSON EDITOR SECTION =====
-    with ui.card().classes('w-full p-4 mb-6'):
-        with ui.row().classes('w-full justify-between items-center'):
+    with ui.card().classes('w-full p-4 mb-6').style('max-height: 450px;'):
+        with ui.row().classes('w-full justify-between items-center mb-2'):
             ui.label('LLM Raw Output').classes('text-xl font-bold text-white')
 
             with ui.row().classes('gap-2'):
@@ -45,9 +45,9 @@ def create_reasoning(bot_service: BotService, state_manager: StateManager):
 
                 ui.button('⬇️ Export JSON', on_click=export_json).props('size=sm')
 
-        # JSON display with ui.code - proper height container
-        with ui.column().classes('w-full'):
-            json_display = ui.code('{}', language='json').classes('w-full').style('height: 320px; overflow: auto;')
+        # JSON display with scrollable container
+        with ui.scroll_area().classes('w-full').style('height: 350px;'):
+            json_display = ui.code('{}', language='json').classes('w-full')
 
     # ===== TIMELINE FILTERS =====
     with ui.card().classes('w-full p-4 mb-6'):
