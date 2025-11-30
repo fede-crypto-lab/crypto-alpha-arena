@@ -45,14 +45,8 @@ def create_reasoning(bot_service: BotService, state_manager: StateManager):
 
                 ui.button('⬇️ Export JSON', on_click=export_json).props('size=sm')
 
-        # JSON editor with read-only mode
-        json_editor = ui.json_editor({
-            'content': {'json': {}},
-            'mode': 'tree',
-            'mainMenuBar': False,
-            'navigationBar': False,
-            'readOnly': True
-        }).classes('w-full h-96')
+        # JSON display with code block (more reliable than json_editor)
+        json_display = ui.code('{}', language='json').classes('w-full h-96 overflow-auto')
 
     # ===== TIMELINE FILTERS =====
     with ui.card().classes('w-full p-4 mb-6'):
@@ -83,11 +77,18 @@ def create_reasoning(bot_service: BotService, state_manager: StateManager):
         """Update JSON editor and timeline with latest reasoning data"""
         state = state_manager.get_state()
 
-        # Update JSON editor
+        # Update JSON display
         reasoning_data = state.last_reasoning
         if reasoning_data and (reasoning_data.get('reasoning') or reasoning_data.get('trade_decisions')):
-            json_editor.content = {'json': reasoning_data}
-            json_editor.update()
+            # Format JSON nicely, limit size to avoid issues
+            try:
+                json_str = json.dumps(reasoning_data, indent=2)
+                # Limit to 10KB to avoid WebSocket issues
+                if len(json_str) > 10000:
+                    json_str = json_str[:10000] + '\n... (truncated)'
+                json_display.content = json_str
+            except Exception as e:
+                json_display.content = f'{{"error": "{str(e)}"}}'
 
             # Update timeline with filtering
             timeline_container.clear()
@@ -180,8 +181,7 @@ def create_reasoning(bot_service: BotService, state_manager: StateManager):
                     ui.label('No trade decisions yet').classes('text-gray-400 text-center py-4')
         else:
             # Empty state
-            json_editor.content = {'json': {}}
-            json_editor.update()
+            json_display.content = '{}'
             timeline_container.clear()
 
             # Update stats in empty state
