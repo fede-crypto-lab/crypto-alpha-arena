@@ -483,7 +483,7 @@ class BotService:
         try:
             # Load from CONFIG dict
             return {
-                'assets': CONFIG.get('assets', 'BTC ETH').split(),
+                'assets': (CONFIG.get('assets') or 'BTC ETH').split(),
                 'interval': CONFIG.get('interval', '5m'),
                 'llm_model': CONFIG.get('llm_model', 'x-ai/grok-4'),
                 'taapi_key': CONFIG.get('taapi_api_key', ''),
@@ -508,7 +508,7 @@ class BotService:
 
             config_data = {
                 'strategy': {
-                    'assets': CONFIG.get('assets', 'BTC ETH'),
+                    'assets': CONFIG.get('assets') or ('BTC ETH'),
                     'interval': CONFIG.get('interval', '5m'),
                     'llm_model': CONFIG.get('llm_model', 'x-ai/grok-4'),
                 },
@@ -546,11 +546,11 @@ class BotService:
 
                 # Load strategy config
                 if 'strategy' in data:
-                    if 'assets' in data['strategy']:
+                    if data['strategy'].get('assets'):
                         CONFIG['assets'] = data['strategy']['assets']
-                    if 'interval' in data['strategy']:
+                    if data['strategy'].get('interval'):
                         CONFIG['interval'] = data['strategy']['interval']
-                    if 'llm_model' in data['strategy']:
+                    if data['strategy'].get('llm_model'):
                         CONFIG['llm_model'] = data['strategy']['llm_model']
 
                 # Load API keys
@@ -642,3 +642,4 @@ class BotService:
             self.logger.error(f"Error testing API connections: {e}")
 
         return results
+
