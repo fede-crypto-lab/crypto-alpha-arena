@@ -344,6 +344,15 @@ class BotService:
             if self.state_manager:
                 self.state_manager.update(state)
 
+            # Track equity history for charting
+            self.equity_history.append({
+                'time': state.last_update,
+                'value': state.total_value or state.balance
+            })
+            # Keep only last 500 points
+            if len(self.equity_history) > 500:
+                self.equity_history = self.equity_history[-500:]
+
             # Add event to activity feed
             self._add_event(f"📊 Market data refreshed - Balance: ${state.balance:,.2f}")
 
