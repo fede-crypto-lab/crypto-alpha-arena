@@ -508,7 +508,7 @@ class BotService:
 
             config_data = {
                 'strategy': {
-                    'assets': CONFIG.get('assets') or ('BTC ETH'),
+                    'assets': CONFIG.get('assets') or 'BTC ETH',
                     'interval': CONFIG.get('interval', '5m'),
                     'llm_model': CONFIG.get('llm_model', 'x-ai/grok-4'),
                 },
@@ -628,13 +628,16 @@ class BotService:
                 import aiohttp
                 async with aiohttp.ClientSession() as session:
                     try:
-                        async with session.post(
-                            'https://openrouter.ai/api/v1/auth/key',
+                        # Use models endpoint which is more reliable for testing
+                        async with session.get(
+                            'https://openrouter.ai/api/v1/models',
                             headers={'Authorization': f'Bearer {or_key}'},
-                            timeout=aiohttp.ClientTimeout(total=5)
+                            timeout=aiohttp.ClientTimeout(total=10)
                         ) as resp:
-                            if resp.status in [200, 401]:  # 401 means key exists but might be invalid
+                            if resp.status == 200:
                                 results['openrouter'] = True
+                            else:
+                                self.logger.debug(f"OpenRouter test got status: {resp.status}")
                     except Exception as e:
                         self.logger.debug(f"OpenRouter test failed: {e}")
 
@@ -642,4 +645,3 @@ class BotService:
             self.logger.error(f"Error testing API connections: {e}")
 
         return results
-
