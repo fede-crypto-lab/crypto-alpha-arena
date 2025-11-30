@@ -23,6 +23,13 @@ def create_settings(bot_service: BotService, state_manager: StateManager):
     # Load configuration from file or use defaults
     def load_config():
         """Load configuration from file, but always use env vars for API keys"""
+        # Debug: log CONFIG values
+        print(f"=== SETTINGS DEBUG ===")
+        print(f"CONFIG taapi_api_key: {bool(CONFIG.get('taapi_api_key'))}")
+        print(f"CONFIG hyperliquid_private_key: {bool(CONFIG.get('hyperliquid_private_key'))}")
+        print(f"CONFIG openrouter_api_key: {bool(CONFIG.get('openrouter_api_key'))}")
+        print(f"=== END SETTINGS DEBUG ===")
+        
         # Always get API keys from environment (never from file for security)
         api_keys = {
             'taapi_api_key': CONFIG.get('taapi_api_key') or '',
@@ -30,6 +37,8 @@ def create_settings(bot_service: BotService, state_manager: StateManager):
             'hyperliquid_network': CONFIG.get('hyperliquid_network') or 'mainnet',
             'openrouter_api_key': CONFIG.get('openrouter_api_key') or ''
         }
+        
+        print(f"api_keys dict: taapi={bool(api_keys['taapi_api_key'])}, hl={bool(api_keys['hyperliquid_private_key'])}, or={bool(api_keys['openrouter_api_key'])}")
         
         if config_file.exists():
             try:
