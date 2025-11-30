@@ -22,11 +22,22 @@ def create_settings(bot_service: BotService, state_manager: StateManager):
 
     # Load configuration from file or use defaults
     def load_config():
-        """Load configuration from file"""
+        """Load configuration from file, but always use env vars for API keys"""
+        # Always get API keys from environment (never from file for security)
+        api_keys = {
+            'taapi_api_key': CONFIG.get('taapi_api_key') or '',
+            'hyperliquid_private_key': CONFIG.get('hyperliquid_private_key') or '',
+            'hyperliquid_network': CONFIG.get('hyperliquid_network') or 'mainnet',
+            'openrouter_api_key': CONFIG.get('openrouter_api_key') or ''
+        }
+        
         if config_file.exists():
             try:
                 with open(config_file, 'r') as f:
-                    return json.load(f)
+                    data = json.load(f)
+                    # Override api_keys with env vars (never trust file for secrets)
+                    data['api_keys'] = api_keys
+                    return data
             except Exception as e:
                 ui.notify(f'Failed to load config: {e}', type='warning')
 
@@ -39,12 +50,7 @@ def create_settings(bot_service: BotService, state_manager: StateManager):
                 'reasoning_enabled': CONFIG.get('reasoning_enabled', False),
                 'reasoning_effort': CONFIG.get('reasoning_effort') or 'high'
             },
-            'api_keys': {
-                'taapi_api_key': CONFIG.get('taapi_api_key') or '',
-                'hyperliquid_private_key': CONFIG.get('hyperliquid_private_key') or '',
-                'hyperliquid_network': CONFIG.get('hyperliquid_network') or 'mainnet',
-                'openrouter_api_key': CONFIG.get('openrouter_api_key') or ''
-            },
+            'api_keys': api_keys,
             'risk_management': {
                 'max_position_size': 1000,
                 'max_leverage': 3,
@@ -249,7 +255,7 @@ def create_settings(bot_service: BotService, state_manager: StateManager):
                         try:
                             ui.notify('Testing API connections...', type='info')
 
-                            # Update environment variables temporarily for testing
+                            # Update CONFIG and environment variables for testing
                             if taapi_input.value:
                                 CONFIG['taapi_api_key'] = taapi_input.value
                                 os.environ['TAAPI_API_KEY'] = taapi_input.value
@@ -529,4 +535,3 @@ def create_settings(bot_service: BotService, state_manager: StateManager):
 
     # Schedule initial config load
     asyncio.create_task(load_initial_config())
-
