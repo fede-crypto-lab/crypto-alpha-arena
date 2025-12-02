@@ -137,6 +137,8 @@ def create_settings(bot_service: BotService, state_manager: StateManager):
                             'google/gemini-3-pro-preview',
                             'google/gemini-2.5-pro',
                             'google/gemini-2.5-flash',
+                            'deepseek/deepseek-v3.2',
+                            'deepseek/deepseek-chat',
                         ],
                         value=config_data['strategy']['llm_model']
                     ).classes('w-full')
@@ -547,3 +549,4 @@ def create_settings(bot_service: BotService, state_manager: StateManager):
 
     # Schedule initial config load
     asyncio.create_task(load_initial_config())
+
