@@ -245,7 +245,7 @@ class TradingAgent:
                 "additionalProperties": False,
             }
 
-        for _ in range(6):
+        for _ in range(10):  # Tool loop cap - max iterations before forcing decision
             data = {"model": self.model, "messages": messages}
             if allow_structured:
                 data["response_format"] = {
