@@ -1,6 +1,8 @@
 """Decision-making agent that orchestrates LLM prompts and indicator lookups."""
 
 import requests
+from requests.exceptions import ChunkedEncodingError, ConnectionError as RequestsConnectionError, Timeout
+import time
 from src.backend.config_loader import CONFIG
 from src.backend.indicators.taapi_client import TAAPIClient
 import json
@@ -21,6 +23,15 @@ class TradingAgent:
         self.taapi = TAAPIClient()
         # Fast/cheap sanitizer model to normalize outputs on parse failures
         self.sanitize_model = CONFIG.get("sanitize_model") or "openai/gpt-5"
+
+        # Detect models that don't support structured outputs (response_format)
+        # DeepSeek via OpenRouter returns "This response_format type is unavailable now"
+        model_lower = self.model.lower()
+        if "deepseek" in model_lower:
+            self._supports_structured_output = False
+            logging.info(f"[INFO] DeepSeek model detected ({self.model}) - structured outputs disabled to avoid 400 errors")
+        else:
+            self._supports_structured_output = True
 
         # Warn if using a model that may not support tools
         if ":free" in self.model.lower() or "deepseek" in self.model.lower():
@@ -126,23 +137,76 @@ class TradingAgent:
         if self.app_title:
             headers["X-Title"] = self.app_title
 
-        def _post(payload):
-            """Send a POST request to OpenRouter, logging request and response metadata."""
-            # Log the full request payload for debugging
-            logging.info("Sending request to OpenRouter (model: %s)", payload.get('model'))
-            with open("llm_requests.log", "a", encoding="utf-8") as f:
-                f.write(f"\n\n=== {datetime.now()} ===\n")
-                f.write(f"Model: {payload.get('model')}\n")
-                f.write(f"Headers: {json.dumps({k: v for k, v in headers.items() if k != 'Authorization'})}\n")
-                f.write(f"Payload:\n{json.dumps(payload, indent=2)}\n")
-            resp = requests.post(self.base_url, headers=headers, json=payload, timeout=60)
-            logging.info("Received response from OpenRouter (status: %s)", resp.status_code)
-            if resp.status_code != 200:
-                logging.error("OpenRouter error: %s - %s", resp.status_code, resp.text)
-                with open("llm_requests.log", "a", encoding="utf-8") as f:
-                    f.write(f"ERROR Response: {resp.status_code} - {resp.text}\n")
-            resp.raise_for_status()
-            return resp.json()
+        def _post(payload, max_retries=3):
+            """Send a POST request to OpenRouter with retry logic for transient errors."""
+            last_error = None
+            
+            for attempt in range(max_retries):
+                try:
+                    logging.info("Sending request to OpenRouter (model: %s, attempt: %d/%d)", 
+                                payload.get('model'), attempt + 1, max_retries)
+                    with open("llm_requests.log", "a", encoding="utf-8") as f:
+                        f.write(f"\n\n=== {datetime.now()} (attempt {attempt + 1}/{max_retries}) ===\n")
+                        f.write(f"Model: {payload.get('model')}\n")
+                        f.write(f"Headers: {json.dumps({k: v for k, v in headers.items() if k != 'Authorization'})}\n")
+                        f.write(f"Payload:\n{json.dumps(payload, indent=2)}\n")
+                    
+                    # Separate connect timeout (10s) from read timeout (120s for long responses)
+                    resp = requests.post(
+                        self.base_url, 
+                        headers=headers, 
+                        json=payload, 
+                        timeout=(10, 120)
+                    )
+                    
+                    logging.info("Received response from OpenRouter (status: %s)", resp.status_code)
+                    
+                    if resp.status_code != 200:
+                        logging.error("OpenRouter error: %s - %s", resp.status_code, resp.text)
+                        with open("llm_requests.log", "a", encoding="utf-8") as f:
+                            f.write(f"ERROR Response: {resp.status_code} - {resp.text}\n")
+                    
+                    resp.raise_for_status()
+                    return resp.json()
+                    
+                except ChunkedEncodingError as e:
+                    # "Response ended prematurely" - retry
+                    last_error = e
+                    logging.warning("Response ended prematurely (attempt %d/%d): %s", 
+                                  attempt + 1, max_retries, e)
+                    if attempt < max_retries - 1:
+                        sleep_time = 2 ** attempt  # 1, 2, 4 seconds
+                        logging.info("Retrying in %d seconds...", sleep_time)
+                        time.sleep(sleep_time)
+                        continue
+                    
+                except (RequestsConnectionError, Timeout) as e:
+                    # Network issues - retry
+                    last_error = e
+                    logging.warning("Connection error (attempt %d/%d): %s", 
+                                  attempt + 1, max_retries, e)
+                    if attempt < max_retries - 1:
+                        sleep_time = 2 ** attempt
+                        logging.info("Retrying in %d seconds...", sleep_time)
+                        time.sleep(sleep_time)
+                        continue
+                        
+                except requests.HTTPError as e:
+                    # HTTP errors (4xx, 5xx) - retry 5xx only
+                    if e.response is not None and 500 <= e.response.status_code < 600:
+                        last_error = e
+                        logging.warning("Server error %d (attempt %d/%d)", 
+                                      e.response.status_code, attempt + 1, max_retries)
+                        if attempt < max_retries - 1:
+                            sleep_time = 2 ** attempt
+                            time.sleep(sleep_time)
+                            continue
+                    # For 4xx errors, raise immediately (don't retry)
+                    raise
+            
+            # All retries failed
+            logging.error("All %d retry attempts failed. Last error: %s", max_retries, last_error)
+            raise last_error or requests.RequestException("Unknown error after retries")
 
         def _sanitize_output(raw_content: str, assets_list):
             """Coerce arbitrary LLM output into the required reasoning + decisions schema."""
@@ -212,7 +276,8 @@ class TradingAgent:
                 return {"reasoning": "", "trade_decisions": []}
 
         allow_tools = True
-        allow_structured = True
+        # Use instance variable to determine structured output support (set in __init__)
+        allow_structured = self._supports_structured_output
 
         def _build_schema():
             """Assemble the JSON schema used for structured LLM responses."""
@@ -274,6 +339,21 @@ class TradingAgent:
                 data["provider"] = provider_payload
             try:
                 resp_json = _post(data)
+            except (ChunkedEncodingError, RequestsConnectionError, Timeout) as e:
+                # Transient network errors - all retries in _post failed
+                logging.error("Network error after all retries: %s. Returning safe HOLD decisions.", e)
+                return {
+                    "reasoning": f"Network error: {type(e).__name__}",
+                    "trade_decisions": [{
+                        "asset": a,
+                        "action": "hold",
+                        "allocation_usd": 0.0,
+                        "tp_price": None,
+                        "sl_price": None,
+                        "exit_plan": "",
+                        "rationale": f"Network error - holding to avoid bad decisions"
+                    } for a in assets]
+                }
             except requests.HTTPError as e:
                 try:
                     err = e.response.json()
@@ -296,11 +376,21 @@ class TradingAgent:
                     if allow_tools:
                         allow_tools = False
                         continue
+                        
+                # DeepSeek or other provider: response_format not supported
+                if "response_format" in raw.lower() or "unavailable" in raw.lower():
+                    logging.warning("Provider rejected response_format (structured outputs); retrying without it.")
+                    if allow_structured:
+                        allow_structured = False
+                        self._supports_structured_output = False  # Remember for future calls
+                        continue
+                        
                 # Provider may not support structured outputs / response_format
                 err_text = json.dumps(err)
                 if allow_structured and ("response_format" in err_text or "structured" in err_text or e.response.status_code in (400, 422)):
                     logging.warning("Provider rejected structured outputs; retrying without response_format.")
                     allow_structured = False
+                    self._supports_structured_output = False  # Remember for future calls
                     continue
                 raise
 
