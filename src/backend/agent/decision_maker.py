@@ -62,12 +62,12 @@ class TradingAgent:
             "Your goal: make decisive, first-principles decisions per asset that minimize churn while capturing edge.\n\n"
             "Aggressively pursue setups where calculated risk is outweighed by expected edge; size positions so downside is controlled while upside remains meaningful.\n\n"
             "Core policy (low-churn, position-aware)\n"
-            "1) Respect prior plans: If an active trade has an exit_plan with explicit invalidation (e.g., “close if 4h close above EMA50”), DO NOT close or flip early unless that invalidation (or a stronger one) has occurred.\n"
+            "1) Respect prior plans: If an active trade has an exit_plan with explicit invalidation (e.g., "close if 4h close above EMA50"), DO NOT close or flip early unless that invalidation (or a stronger one) has occurred.\n"
             "2) Hysteresis: Require stronger evidence to CHANGE a decision than to keep it. Only flip direction if BOTH:\n"
             "   a) Higher-timeframe structure supports the new direction (e.g., 4h EMA20 vs EMA50 and/or MACD regime), AND\n"
             "   b) Intraday structure confirms with a decisive break beyond ~0.5×ATR (recent) and momentum alignment (MACD or RSI slope).\n"
             "   Otherwise, prefer HOLD or adjust TP/SL.\n"
-            "3) Cooldown: After opening, adding, reducing, or flipping, impose a self-cooldown of at least 3 bars of the decision timeframe (e.g., 3×5m = 15m) before another direction change, unless a hard invalidation occurs. Encode this in exit_plan (e.g., “cooldown_bars:3 until 2025-10-19T15:55Z”). You must honor your own cooldowns on future cycles.\n"
+            "3) Cooldown: After opening, adding, reducing, or flipping, impose a self-cooldown of at least 3 bars of the decision timeframe (e.g., 3×5m = 15m) before another direction change, unless a hard invalidation occurs. Encode this in exit_plan (e.g., "cooldown_bars:3 until 2025-10-19T15:55Z"). You must honor your own cooldowns on future cycles.\n"
             "4) Funding is a tilt, not a trigger: Do NOT open/close/flip solely due to funding unless expected funding over your intended holding horizon meaningfully exceeds expected edge (e.g., > ~0.25×ATR). Consider that funding accrues discretely and slowly relative to 5m bars.\n"
             "5) Overbought/oversold ≠ reversal by itself: Treat RSI extremes as risk-of-pullback. You need structure + momentum confirmation to bet against trend. Prefer tightening stops or taking partial profits over instant flips.\n"
             "6) Prefer adjustments over exits: If the thesis weakens but is not invalidated, first consider: tighten stop (e.g., to a recent swing or ATR multiple), trail TP, or reduce size. Flip only on hard invalidation + fresh confluence.\n\n"
@@ -402,7 +402,20 @@ class TradingAgent:
             if allow_tools and tool_calls:
                 for tc in tool_calls:
                     if tc.get("type") == "function" and tc.get("function", {}).get("name") == "fetch_taapi_indicator":
-                        args = json.loads(tc["function"].get("arguments") or "{}")
+                        # Parse tool call arguments with error handling for malformed JSON
+                        raw_args = tc["function"].get("arguments") or "{}"
+                        try:
+                            args = json.loads(raw_args)
+                        except json.JSONDecodeError as je:
+                            logging.warning("Malformed tool call arguments from LLM: %s (error: %s)", raw_args[:200], je)
+                            # Skip this tool call and continue with others
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tc.get("id"),
+                                "name": "fetch_taapi_indicator",
+                                "content": f"Error: Invalid JSON in tool arguments - {je}",
+                            })
+                            continue
                         try:
                             params = {
                                 "secret": self.taapi.api_key,
