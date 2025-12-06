@@ -170,7 +170,7 @@ def create_reasoning(bot_service: BotService, state_manager: StateManager):
                                     # Details in grid
                                     with ui.grid(columns=2).classes('gap-2 text-xs text-gray-400'):
                                         ui.label(f'Entry: {entry_price}')
-                                        ui.label(f'Allocation: ${allocation:,.2f}')
+                                        ui.label(f'Allocation: ${allocation:,.2f}' if allocation else 'Allocation: -')
                                         ui.label(f'TP: {tp_price if tp_price else "N/A"}')
                                         ui.label(f'SL: {sl_price if sl_price else "N/A"}')
                                     # Exit plan on separate line (full width)
@@ -210,3 +210,4 @@ def create_reasoning(bot_service: BotService, state_manager: StateManager):
 
     # Initial update
     asyncio.create_task(update_reasoning())
+
