@@ -49,6 +49,23 @@ class TradingAgent:
         """
         return self._decide(context, assets=assets)
 
+    def _strip_markdown_code_blocks(self, content: str) -> str:
+        """Strip markdown code blocks from LLM response.
+        
+        Gemini and other models often wrap JSON in ```json ... ``` which breaks parsing.
+        """
+        content = content.strip()
+        if content.startswith("```"):
+            # Remove opening ```json or ```
+            first_newline = content.find('\n')
+            if first_newline != -1:
+                content = content[first_newline + 1:]
+            # Remove closing ```
+            if content.endswith("```"):
+                content = content[:-3].strip()
+            logging.info("Stripped markdown code blocks from LLM response")
+        return content
+
     def _decide(self, context, assets):
         """Dispatch decision request to the LLM and enforce output contract."""
         system_prompt = (
@@ -62,12 +79,12 @@ class TradingAgent:
             "Your goal: make decisive, first-principles decisions per asset that minimize churn while capturing edge.\n\n"
             "Aggressively pursue setups where calculated risk is outweighed by expected edge; size positions so downside is controlled while upside remains meaningful.\n\n"
             "Core policy (low-churn, position-aware)\n"
-            "1) Respect prior plans: If an active trade has an exit_plan with explicit invalidation (e.g., “close if 4h close above EMA50”), DO NOT close or flip early unless that invalidation (or a stronger one) has occurred.\n"
+            "1) Respect prior plans: If an active trade has an exit_plan with explicit invalidation (e.g., "close if 4h close above EMA50"), DO NOT close or flip early unless that invalidation (or a stronger one) has occurred.\n"
             "2) Hysteresis: Require stronger evidence to CHANGE a decision than to keep it. Only flip direction if BOTH:\n"
             "   a) Higher-timeframe structure supports the new direction (e.g., 4h EMA20 vs EMA50 and/or MACD regime), AND\n"
             "   b) Intraday structure confirms with a decisive break beyond ~0.5×ATR (recent) and momentum alignment (MACD or RSI slope).\n"
             "   Otherwise, prefer HOLD or adjust TP/SL.\n"
-            "3) Cooldown: After opening, adding, reducing, or flipping, impose a self-cooldown of at least 3 bars of the decision timeframe (e.g., 3×5m = 15m) before another direction change, unless a hard invalidation occurs. Encode this in exit_plan (e.g., “cooldown_bars:3 until 2025-10-19T15:55Z”). You must honor your own cooldowns on future cycles.\n"
+            "3) Cooldown: After opening, adding, reducing, or flipping, impose a self-cooldown of at least 3 bars of the decision timeframe (e.g., 3×5m = 15m) before another direction change, unless a hard invalidation occurs. Encode this in exit_plan (e.g., "cooldown_bars:3 until 2025-10-19T15:55Z"). You must honor your own cooldowns on future cycles.\n"
             "4) Funding is a tilt, not a trigger: Do NOT open/close/flip solely due to funding unless expected funding over your intended holding horizon meaningfully exceeds expected edge (e.g., > ~0.25×ATR). Consider that funding accrues discretely and slowly relative to 5m bars.\n"
             "5) Overbought/oversold ≠ reversal by itself: Treat RSI extremes as risk-of-pullback. You need structure + momentum confirmation to bet against trend. Prefer tightening stops or taking partial profits over instant flips.\n"
             "6) Prefer adjustments over exits: If the thesis weakens but is not invalidated, first consider: tighten stop (e.g., to a recent swing or ATR multiple), trail TP, or reduce size. Flip only on hard invalidation + fresh confluence.\n\n"
@@ -384,6 +401,14 @@ class TradingAgent:
                         allow_structured = False
                         self._supports_structured_output = False  # Remember for future calls
                         continue
+                
+                # Gemini: Function calling with response mime type unsupported
+                if "function calling" in raw.lower() and "mime type" in raw.lower():
+                    logging.warning("Gemini rejected function calling with JSON response format; retrying without structured outputs.")
+                    if allow_structured:
+                        allow_structured = False
+                        self._supports_structured_output = False
+                        continue
                         
                 # Provider may not support structured outputs / response_format
                 err_text = json.dumps(err)
@@ -451,6 +476,8 @@ class TradingAgent:
                     parsed = message.get("parsed")
                 else:
                     content = message.get("content") or "{}"
+                    # ===== FIX: Strip markdown code blocks (Gemini wraps JSON in ```json ... ```) =====
+                    content = self._strip_markdown_code_blocks(content)
                     parsed = json.loads(content)
 
                 if not isinstance(parsed, dict):
