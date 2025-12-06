@@ -600,7 +600,7 @@ class TradingBotEngine:
                         # Fallback: if rationale is empty, use exit_plan or extract from reasoning
                         if not rationale:
                             rationale = decision.get('exit_plan', '') or (reasoning[:200] if reasoning else '')
-                        allocation = float(decision.get('allocation_usd', 0))
+                        allocation = float(decision.get('allocation_usd') or 0)
                         tp_price = decision.get('tp_price')
                         sl_price = decision.get('sl_price')
                         exit_plan = decision.get('exit_plan', '')
