@@ -723,6 +723,7 @@ class TradingBotEngine:
                                         'action': action,
                                         'allocation_usd': allocation,
                                         'amount': amount,
+                                        'size': amount,  # Alias for UI compatibility (history.py reads 'size')
                                         'entry_price': current_price,
                                         'tp_price': tp_price,
                                         'tp_oid': tp_oid,
@@ -734,6 +735,33 @@ class TradingBotEngine:
                                         'opened_at': datetime.now(UTC).isoformat(),
                                         'filled': filled
                                     })
+                                    
+                                    # ===== POST-TRADE STATE SYNC (NEW!) =====
+                                    # Sync positions immediately after trade execution to update UI
+                                    try:
+                                        post_trade_state = await self.hyperliquid.get_user_state()
+                                        post_positions = []
+                                        for pos in post_trade_state['positions']:
+                                            symbol = pos.get('coin')
+                                            try:
+                                                curr_price = await self.hyperliquid.get_current_price(symbol)
+                                                post_positions.append({
+                                                    'symbol': symbol,
+                                                    'quantity': float(pos.get('szi', 0) or 0),
+                                                    'entry_price': float(pos.get('entryPx', 0) or 0),
+                                                    'current_price': curr_price,
+                                                    'liquidation_price': float(pos.get('liquidationPx', 0) or 0),
+                                                    'unrealized_pnl': pos.get('pnl', 0.0),
+                                                    'leverage': pos.get('leverage', {}).get('value', 1) if isinstance(pos.get('leverage'), dict) else pos.get('leverage', 1)
+                                                })
+                                            except Exception:
+                                                pass
+                                        self.state.positions = post_positions
+                                        self.state.balance = post_trade_state['balance']
+                                        self.state.total_value = post_trade_state['total_value']
+                                        self.logger.info(f"📊 POST-TRADE SYNC: Updated state with {len(post_positions)} positions")
+                                    except Exception as e:
+                                        self.logger.warning(f"Post-trade state sync failed: {e}")
 
                                     # Notify GUI of trade
                                     if self.on_trade_executed:
