@@ -597,6 +597,9 @@ class TradingBotEngine:
 
                         action = decision.get('action')
                         rationale = decision.get('rationale', '')
+                        # Fallback: if rationale is empty, use exit_plan or extract from reasoning
+                        if not rationale:
+                            rationale = decision.get('exit_plan', '') or (reasoning[:200] if reasoning else '')
                         allocation = float(decision.get('allocation_usd', 0))
                         tp_price = decision.get('tp_price')
                         sl_price = decision.get('sl_price')
