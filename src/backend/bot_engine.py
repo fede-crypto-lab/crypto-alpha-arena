@@ -1,6 +1,8 @@
 """
 Trading Bot Engine - Core trading logic separated from UI
 Refactored from ai-trading-agent/src/main.py
+
+PATCH: Added pre-decision sync mechanism to prevent stale position decisions
 """
 
 import asyncio
@@ -152,10 +154,155 @@ class TradingBotEngine:
         self.logger.info("Bot stopped")
         self._notify_state_update()
 
+    # ==================== NEW: PRE-DECISION SYNC METHODS ====================
+    
+    async def _sync_exchange_state(self) -> Dict[str, Any]:
+        """
+        Sync with exchange to get fresh position state.
+        Called before LLM decision to ensure we have current data.
+        
+        Returns:
+            Dict with 'positions', 'open_orders', 'balance', 'total_value'
+        """
+        self.logger.info("🔄 PRE-DECISION SYNC: Fetching fresh exchange state...")
+        
+        try:
+            # Fetch fresh state from Hyperliquid
+            state = await self.hyperliquid.get_user_state()
+            open_orders_raw = await self.hyperliquid.get_open_orders()
+            
+            # Enrich positions with current prices
+            enriched_positions = []
+            for pos in state['positions']:
+                symbol = pos.get('coin')
+                try:
+                    current_price = await self.hyperliquid.get_current_price(symbol)
+                    enriched_positions.append({
+                        'symbol': symbol,
+                        'quantity': float(pos.get('szi', 0) or 0),
+                        'entry_price': float(pos.get('entryPx', 0) or 0),
+                        'current_price': current_price,
+                        'liquidation_price': float(pos.get('liquidationPx', 0) or 0),
+                        'unrealized_pnl': pos.get('pnl', 0.0),
+                        'leverage': pos.get('leverage', {}).get('value', 1) if isinstance(pos.get('leverage'), dict) else pos.get('leverage', 1)
+                    })
+                except Exception as e:
+                    self.logger.error(f"Error enriching position for {symbol}: {e}")
+            
+            # Parse open orders
+            open_orders = []
+            for o in open_orders_raw:
+                order_type_obj = o.get('orderType', {})
+                trigger_price = None
+                order_type_str = 'limit'
+
+                if isinstance(order_type_obj, dict) and 'trigger' in order_type_obj:
+                    order_type_str = 'trigger'
+                    trigger_data = order_type_obj.get('trigger', {})
+                    if 'triggerPx' in trigger_data:
+                        trigger_price = float(trigger_data['triggerPx'])
+
+                open_orders.append({
+                    'coin': o.get('coin'),
+                    'oid': o.get('oid'),
+                    'is_buy': o.get('side') == 'B',
+                    'size': float(o.get('sz', 0)),
+                    'price': float(o.get('limitPx', 0)),
+                    'trigger_price': trigger_price,
+                    'order_type': order_type_str
+                })
+            
+            self.logger.info(f"🔄 SYNC COMPLETE: {len(enriched_positions)} positions, {len(open_orders)} orders")
+            
+            return {
+                'positions': enriched_positions,
+                'positions_raw': state['positions'],
+                'open_orders': open_orders,
+                'open_orders_raw': open_orders_raw,
+                'balance': state['balance'],
+                'total_value': state['total_value']
+            }
+            
+        except Exception as e:
+            self.logger.error(f"❌ SYNC FAILED: {e}")
+            raise
+
+    async def _reconcile_pre_decision(self, positions_raw: List[Dict], open_orders_raw: List[Dict]) -> List[str]:
+        """
+        Reconcile active trades with fresh exchange state BEFORE making LLM decision.
+        This catches any SL/TP triggers that occurred during indicator fetching.
+        
+        Returns:
+            List of assets that were removed (closed by exchange)
+        """
+        exchange_assets = {pos.get('coin') for pos in positions_raw}
+        order_assets = {o.get('coin') for o in open_orders_raw}
+        tracked_assets = exchange_assets | order_assets
+
+        removed = []
+        for trade in self.active_trades[:]:
+            if trade['asset'] not in tracked_assets:
+                self.active_trades.remove(trade)
+                removed.append(trade['asset'])
+
+        if removed:
+            self.logger.warning(f"⚠️ PRE-DECISION RECONCILE: Positions closed by exchange: {removed}")
+            self._write_diary_entry({
+                'timestamp': datetime.now(UTC).isoformat(),
+                'action': 'reconcile_pre_decision',
+                'removed_assets': removed,
+                'note': 'Position closed by SL/TP before LLM decision'
+            })
+
+        return removed
+
+    async def _verify_post_trade(self, asset: str, expected_side: str, expected_size: float) -> bool:
+        """
+        Verify trade execution after placing orders.
+        
+        Args:
+            asset: Asset that was traded
+            expected_side: 'long' or 'short'
+            expected_size: Expected position size
+            
+        Returns:
+            True if position matches expected, False otherwise
+        """
+        try:
+            await asyncio.sleep(1)  # Wait for exchange to process
+            state = await self.hyperliquid.get_user_state()
+            
+            for pos in state['positions']:
+                if pos.get('coin') == asset:
+                    actual_size = float(pos.get('szi', 0) or 0)
+                    actual_side = 'long' if actual_size > 0 else 'short'
+                    
+                    size_match = abs(abs(actual_size) - expected_size) < 0.0001
+                    side_match = actual_side == expected_side
+                    
+                    if size_match and side_match:
+                        self.logger.info(f"✅ POST-TRADE VERIFY: {asset} position confirmed ({actual_side} {abs(actual_size)})")
+                        return True
+                    else:
+                        self.logger.warning(f"⚠️ POST-TRADE VERIFY: {asset} mismatch - expected {expected_side} {expected_size}, got {actual_side} {abs(actual_size)}")
+                        return False
+            
+            # No position found - might be closed already or never opened
+            self.logger.warning(f"⚠️ POST-TRADE VERIFY: No position found for {asset}")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"❌ POST-TRADE VERIFY failed: {e}")
+            return False
+
+    # ==================== END NEW METHODS ====================
+
     async def _main_loop(self):
         """
         Main trading loop.
         Adapted from ai-trading-agent/src/main.py lines 88-455
+        
+        PATCHED: Added pre-decision sync between PHASE 8 and PHASE 10
         """
         try:
             while self.is_running:
@@ -234,7 +381,7 @@ class TradingBotEngine:
 
                     self.state.open_orders = open_orders
 
-                    # ===== PHASE 5: Reconcile Active Trades =====
+                    # ===== PHASE 5: Reconcile Active Trades (START OF CYCLE) =====
                     await self._reconcile_active_trades(state['positions'], open_orders_raw)
 
                     # ===== PHASE 6: Fetch Recent Fills =====
@@ -269,7 +416,7 @@ class TradingBotEngine:
                         'recent_fills': recent_fills
                     }
 
-                    # ===== PHASE 8: Gather Market Data =====
+                    # ===== PHASE 8: Gather Market Data (SLOW - 30-60s) =====
                     market_sections = []
                     for idx, asset in enumerate(self.assets):
                         try:
@@ -287,12 +434,9 @@ class TradingBotEngine:
                             funding = await self.hyperliquid.get_funding_rate(asset)
 
                             # Fetch all indicators using bulk endpoint (2 requests instead of 10)
-                            # Note: fetch_asset_indicators() already includes 15s delay between 5m and interval requests
-                            # Uses caching to avoid redundant API calls
                             indicators = self.taapi.fetch_asset_indicators(asset)
                             
                             # Add delay between assets to respect TAAPI rate limit (1 req/15s)
-                            # Only wait if this is not the last asset
                             if idx < len(self.assets) - 1:
                                 self.logger.info(f"Waiting 15s before fetching next asset (TAAPI rate limit)...")
                                 await asyncio.sleep(15)
@@ -303,7 +447,7 @@ class TradingBotEngine:
                             rsi7_5m_series = indicators["5m"].get("rsi7", [])
                             rsi14_5m_series = indicators["5m"].get("rsi14", [])
 
-                            # Extract long-term indicators (interval from config: 1h, 4h, etc.)
+                            # Extract long-term indicators
                             interval = CONFIG.get("interval", "1h")
                             lt_indicators = indicators.get(interval, {})
                             lt_ema20 = lt_indicators.get("ema20")
@@ -345,6 +489,48 @@ class TradingBotEngine:
 
                         except Exception as e:
                             self.logger.error(f"Error gathering market data for {asset}: {e}")
+
+                    # ===== PHASE 8.5: PRE-DECISION SYNC (NEW!) =====
+                    # This is critical - we sync with exchange AFTER gathering indicators
+                    # to catch any SL/TP triggers that occurred during the slow TAAPI calls
+                    try:
+                        sync_state = await self._sync_exchange_state()
+                        
+                        # Update dashboard with FRESH position data
+                        dashboard['positions'] = sync_state['positions']
+                        dashboard['account_value'] = sync_state['total_value']
+                        dashboard['balance'] = sync_state['balance']
+                        
+                        # Update open orders with fresh data
+                        dashboard['open_orders'] = sync_state['open_orders']
+                        
+                        # Reconcile - this will catch any positions closed by SL/TP
+                        closed_by_exchange = await self._reconcile_pre_decision(
+                            sync_state['positions_raw'], 
+                            sync_state['open_orders_raw']
+                        )
+                        
+                        # Update active_trades in dashboard
+                        dashboard['active_trades'] = self.active_trades
+                        
+                        # Update market prices in market_sections with fresh data
+                        for section in market_sections:
+                            asset = section['asset']
+                            # Find fresh position data
+                            for pos in sync_state['positions']:
+                                if pos['symbol'] == asset:
+                                    section['current_price'] = pos['current_price']
+                                    break
+                        
+                        # Update bot state with fresh data
+                        self.state.positions = sync_state['positions']
+                        self.state.balance = sync_state['balance']
+                        self.state.total_value = sync_state['total_value']
+                        self.state.open_orders = sync_state['open_orders']
+                        
+                    except Exception as e:
+                        self.logger.error(f"Pre-decision sync failed: {e} - continuing with stale data")
+                        # Continue anyway - better to trade with slightly stale data than not at all
 
                     # ===== PHASE 9: Build LLM Context =====
                     context_payload = OrderedDict([
@@ -474,6 +660,10 @@ class TradingBotEngine:
 
                                     self.logger.info(f"Executed {action} {asset}: {amount:.6f} @ {current_price}")
 
+                                    # ===== POST-TRADE VERIFICATION (NEW!) =====
+                                    expected_side = 'long' if action == 'buy' else 'short'
+                                    await self._verify_post_trade(asset, expected_side, amount)
+
                                     # Wait and check fills
                                     await asyncio.sleep(1)
                                     recent_fills_check = await self.hyperliquid.get_recent_fills(limit=5)
@@ -554,9 +744,6 @@ class TradingBotEngine:
                                             'price': current_price,
                                             'timestamp': datetime.now(UTC).isoformat()
                                         })
-
-                                    # Track PnL for Sharpe
-                                    # (Simplified - actual PnL tracked on position close)
 
                             except Exception as e:
                                 self.logger.error(f"Error executing {action} for {asset}: {e}")
@@ -839,6 +1026,10 @@ class TradingBotEngine:
                 raise ValueError(f"Invalid action: {proposal.action}")
             
             self.logger.info(f"Order placed: {proposal.action} {proposal.asset}: {amount:.6f} @ {current_price}")
+            
+            # Post-trade verification
+            expected_side = 'long' if proposal.action == 'buy' else 'short'
+            await self._verify_post_trade(proposal.asset, expected_side, amount)
             
             # Wait and check fills
             await asyncio.sleep(1)
