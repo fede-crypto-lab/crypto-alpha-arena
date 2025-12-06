@@ -14,6 +14,7 @@ from datetime import datetime, UTC
 from pathlib import Path
 from typing import Dict, List, Optional, Callable, Any
 
+from src.backend.indicators import EnhancedMarketContext
 from src.backend.agent.decision_maker import TradingAgent
 from src.backend.config_loader import CONFIG
 from src.backend.indicators.taapi_client import TAAPIClient
@@ -87,6 +88,12 @@ class TradingBotEngine:
         self.taapi = TAAPIClient()
         self.hyperliquid = HyperliquidAPI()
         self.agent = TradingAgent()
+        # Initialize enhanced market context
+        self.enhanced_context = EnhancedMarketContext(
+            sentiment_cache_ttl=3600,   # 1 hour
+            whale_cache_ttl=300         # 5 minutes
+        )
+        self.logger.info("EnhancedMarketContext initialized")
 
         # Bot state
         self.state = BotState()
@@ -532,6 +539,62 @@ class TradingBotEngine:
                         self.logger.error(f"Pre-decision sync failed: {e} - continuing with stale data")
                         # Continue anyway - better to trade with slightly stale data than not at all
 
+                    # ===== PHASE 8.7: Enhanced Analysis =====
+                    self.logger.info("Building enhanced market analysis...")
+                    for section in market_sections:
+                        asset = section["asset"]
+                        current_price = section["current_price"]
+                        
+                        try:
+                            # Fetch OHLCV candles
+                            ohlcv_data = await self.hl_api.get_candles(
+                                asset=asset, 
+                                interval=self.interval,
+                                limit=30
+                            )
+                            
+                            # Build daily OHLC for pivots
+                            if ohlcv_data and len(ohlcv_data) >= 6:
+                                recent = ohlcv_data[-6:]
+                                daily_ohlc = {
+                                    "high": max(c["high"] for c in recent),
+                                    "low": min(c["low"] for c in recent),
+                                    "close": recent[-1]["close"]
+                                }
+                            else:
+                                daily_ohlc = {
+                                    "high": current_price * 1.02,
+                                    "low": current_price * 0.98,
+                                    "close": current_price
+                                }
+                            
+                            # Build enhanced context
+                            enhanced = self.enhanced_context.build_context(
+                                asset=asset,
+                                current_price=current_price,
+                                ohlcv_data=ohlcv_data,
+                                daily_ohlc=daily_ohlc,
+                                timeframe=self.interval
+                            )
+                            
+                            # Add to market section
+                            section["enhanced_analysis"] = enhanced["prompt_text"]
+                            section["composite_signal"] = enhanced["composite_signal"]
+                            section["composite_confidence"] = enhanced["confidence"]
+                            
+                            self.logger.info(
+                                f"Enhanced {asset}: {enhanced['composite_signal']} "
+                                f"(conf: {enhanced['confidence']}%)"
+                            )
+                            
+                        except Exception as e:
+                            self.logger.warning(f"Enhanced analysis failed for {asset}: {e}")
+                            section["enhanced_analysis"] = "Enhanced analysis unavailable"
+                            section["composite_signal"] = "NEUTRAL"
+                            section["composite_confidence"] = 50
+                    
+                    
+                    
                     # ===== PHASE 9: Build LLM Context =====
                     context_payload = OrderedDict([
                         ("invocation", {
