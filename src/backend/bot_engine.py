@@ -1273,12 +1273,98 @@ class TradingBotEngine:
 
                         elif action == 'hold':
                             self.logger.info(f"{asset}: HOLD - {rationale}")
-                            self._write_diary_entry({
-                                'timestamp': datetime.now(UTC).isoformat(),
-                                'asset': asset,
-                                'action': 'hold',
-                                'rationale': rationale
-                            })
+                            
+                            # ===== NEW: Set/Update TP/SL on HOLD if position exists =====
+                            tracked_trade = next((t for t in self.active_trades if t['asset'] == asset), None)
+                            
+                            if tracked_trade and (tp_price or sl_price):
+                                try:
+                                    await asyncio.sleep(0.3)
+                                    current_price = await self.hyperliquid.get_current_price(asset)
+                                    is_long = tracked_trade.get('is_long', True)
+                                    amount = tracked_trade.get('amount', 0)
+                                    
+                                    # Validate TP/SL
+                                    action_for_validation = 'buy' if is_long else 'sell'
+                                    validation = self._validate_tp_sl(action_for_validation, current_price, tp_price, sl_price)
+                                    for warning in validation['warnings']:
+                                        self.logger.warning(f"⚠️ TP/SL VALIDATION (HOLD): {warning}")
+                                    
+                                    validated_tp = validation['tp_price']
+                                    validated_sl = validation['sl_price']
+                                    
+                                    if validated_tp or validated_sl:
+                                        self.logger.info(f"📝 HOLD with TP/SL update for {asset}: TP={validated_tp}, SL={validated_sl}")
+                                        
+                                        # Cancel existing TP/SL orders first
+                                        try:
+                                            existing_orders = await self.hyperliquid.get_open_orders()
+                                            for order in existing_orders:
+                                                if order.get('coin') == asset:
+                                                    oid = order.get('oid')
+                                                    if oid:
+                                                        await asyncio.sleep(0.3)
+                                                        await self.hyperliquid.cancel_order(asset, oid)
+                                                        self.logger.info(f"🧹 Cancelled existing order for {asset}")
+                                        except Exception as e:
+                                            self.logger.warning(f"Failed to cancel existing orders: {e}")
+                                        
+                                        # Place new TP if valid
+                                        tp_oid = None
+                                        if validated_tp:
+                                            try:
+                                                await asyncio.sleep(0.3)
+                                                tp_order = await self.hyperliquid.place_take_profit(
+                                                    asset, is_long, amount, validated_tp
+                                                )
+                                                oids = self.hyperliquid.extract_oids(tp_order)
+                                                tp_oid = oids[0] if oids else None
+                                                self.logger.info(f"✅ Placed TP order for {asset} @ {validated_tp}")
+                                            except Exception as e:
+                                                self.logger.error(f"Failed to place TP: {e}")
+                                        
+                                        # Place new SL if valid
+                                        sl_oid = None
+                                        if validated_sl:
+                                            try:
+                                                await asyncio.sleep(0.3)
+                                                sl_order = await self.hyperliquid.place_stop_loss(
+                                                    asset, is_long, amount, validated_sl
+                                                )
+                                                oids = self.hyperliquid.extract_oids(sl_order)
+                                                sl_oid = oids[0] if oids else None
+                                                self.logger.info(f"✅ Placed SL order for {asset} @ {validated_sl}")
+                                            except Exception as e:
+                                                self.logger.error(f"Failed to place SL: {e}")
+                                        
+                                        # Update tracked trade
+                                        if tp_oid:
+                                            tracked_trade['tp_oid'] = tp_oid
+                                            tracked_trade['tp_price'] = validated_tp
+                                        if sl_oid:
+                                            tracked_trade['sl_oid'] = sl_oid
+                                            tracked_trade['sl_price'] = validated_sl
+                                        
+                                        self._write_diary_entry({
+                                            'timestamp': datetime.now(UTC).isoformat(),
+                                            'asset': asset,
+                                            'action': 'hold_update_tpsl',
+                                            'tp_price': validated_tp,
+                                            'tp_oid': tp_oid,
+                                            'sl_price': validated_sl,
+                                            'sl_oid': sl_oid,
+                                            'rationale': rationale
+                                        })
+                                        
+                                except Exception as e:
+                                    self.logger.error(f"Error updating TP/SL on HOLD for {asset}: {e}")
+                            else:
+                                self._write_diary_entry({
+                                    'timestamp': datetime.now(UTC).isoformat(),
+                                    'asset': asset,
+                                    'action': 'hold',
+                                    'rationale': rationale
+                                })
 
                     self.state.market_data = market_sections
                     self.state.last_update = datetime.now(UTC).isoformat()
