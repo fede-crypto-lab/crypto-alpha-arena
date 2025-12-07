@@ -423,7 +423,7 @@ class HyperliquidAPI:
             logging.error("Funding fetch error for %s: %s", asset, e)
             return None
 
-   async def get_candles(self, asset: str, interval: str = "1h", limit: int = 100) -> list:
+    async def get_candles(self, asset: str, interval: str = "1h", limit: int = 100) -> list:
         """
         Fetch OHLCV candle data from Hyperliquid.
 
@@ -513,3 +513,4 @@ class HyperliquidAPI:
         except Exception as e:
             logging.error(f"Error fetching candles for {asset}: {e}")
             return []
+
