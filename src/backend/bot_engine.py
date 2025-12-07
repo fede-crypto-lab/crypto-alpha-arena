@@ -547,7 +547,7 @@ class TradingBotEngine:
                         
                         try:
                             # Fetch OHLCV candles
-                            ohlcv_data = await self.hl_api.get_candles(
+                            ohlcv_data = await self.hyperliquid.get_candles(
                                 asset=asset, 
                                 interval=self.interval,
                                 limit=30
