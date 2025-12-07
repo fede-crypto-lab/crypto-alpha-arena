@@ -191,6 +191,9 @@ class TradingBotEngine:
                 await asyncio.sleep(2)  # Initial delay to avoid burst
                 state = await self.hyperliquid.get_user_state()
                 
+                # ===== DIAGNOSTIC: Log positions received =====
+                self.logger.info(f"📊 STARTUP: Received {len(state.get('positions', []))} positions from exchange")
+                
                 self.initial_account_value = state.get('total_value', 0.0)
                 if self.initial_account_value == 0.0:
                     self.initial_account_value = state.get('balance', 10000.0)
@@ -198,6 +201,26 @@ class TradingBotEngine:
                 # Get open orders
                 await asyncio.sleep(2)  # Delay between calls
                 open_orders = await self.hyperliquid.get_open_orders()
+                
+                # ===== DIAGNOSTIC: Log what we received =====
+                self.logger.info(f"📋 STARTUP: Received {len(open_orders)} open orders")
+                for idx, order in enumerate(open_orders):
+                    order_type = order.get('orderType', {})
+                    coin = order.get('coin')
+                    oid = order.get('oid')
+                    side = order.get('side')
+                    sz = order.get('sz')
+                    
+                    # Parse trigger info
+                    trigger_info = "N/A"
+                    if isinstance(order_type, dict) and 'trigger' in order_type:
+                        trigger = order_type.get('trigger', {})
+                        tpsl = trigger.get('tpsl', 'unknown')
+                        trigger_px = trigger.get('triggerPx', 'unknown')
+                        trigger_info = f"{tpsl}@{trigger_px}"
+                    
+                    self.logger.info(f"  📋 Order[{idx}]: {coin} oid={oid} side={side} sz={sz} trigger={trigger_info}")
+                    self.logger.debug(f"  📋 Order[{idx}] RAW: {order}")
                 
                 # ===== CRITICAL: Import existing positions into active_trades =====
                 existing_positions = []
@@ -209,6 +232,8 @@ class TradingBotEngine:
                         entry_price = float(pos.get('entryPx', 0) or 0)
                         is_long = size > 0
                         
+                        self.logger.debug(f"🔍 Looking for TP/SL orders for {asset} in {len(open_orders)} orders...")
+                        
                         # Find associated TP/SL orders WITH PRICES
                         tp_oid = None
                         sl_oid = None
@@ -216,7 +241,9 @@ class TradingBotEngine:
                         sl_price = None
                         
                         for order in open_orders:
-                            if order.get('coin') == asset:
+                            order_coin = order.get('coin')
+                            if order_coin == asset:
+                                self.logger.debug(f"🔍 Found order for {asset}: {order}")
                                 order_type = order.get('orderType', {})
                                 if isinstance(order_type, dict) and 'trigger' in order_type:
                                     trigger = order_type.get('trigger', {})
