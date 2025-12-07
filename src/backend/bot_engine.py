@@ -162,6 +162,10 @@ class TradingBotEngine:
             self.logger.error(f"❌ STARTUP SYNC ERROR: {e}")
             self.state.error = f"Startup sync error: {e}"
 
+        # ===== DELAY AFTER STARTUP before main loop =====
+        self.logger.info("⏳ Waiting 10s after startup before main loop (rate limit protection)...")
+        await asyncio.sleep(10)
+
         self._task = asyncio.create_task(self._main_loop())
         self.logger.info(f"Bot started - Assets: {self.assets}, Interval: {self.interval}")
         self._notify_state_update()
@@ -181,7 +185,7 @@ class TradingBotEngine:
                 self.logger.info(f"🔄 STARTUP SYNC attempt {attempt + 1}/{max_retries}")
                 
                 # Get account state with retry
-                await asyncio.sleep(1)  # Initial delay to avoid burst
+                await asyncio.sleep(2)  # Initial delay to avoid burst
                 state = await self.hyperliquid.get_user_state()
                 
                 self.initial_account_value = state.get('total_value', 0.0)
@@ -189,7 +193,7 @@ class TradingBotEngine:
                     self.initial_account_value = state.get('balance', 10000.0)
                 
                 # Get open orders
-                await asyncio.sleep(0.5)
+                await asyncio.sleep(2)  # Delay between calls
                 open_orders = await self.hyperliquid.get_open_orders()
                 
                 # ===== CRITICAL: Import existing positions into active_trades =====
@@ -379,10 +383,10 @@ class TradingBotEngine:
         self.logger.info("🔄 PRE-DECISION SYNC: Fetching fresh exchange state...")
         
         try:
-            await asyncio.sleep(0.5)  # Rate limit protection
+            await asyncio.sleep(2)  # Rate limit protection - increased for testnet
             state = await self.hyperliquid.get_user_state()
             
-            await asyncio.sleep(0.3)
+            await asyncio.sleep(1)
             open_orders_raw = await self.hyperliquid.get_open_orders()
             
             position_assets = {pos.get('coin') for pos in state['positions'] 
@@ -704,7 +708,7 @@ class TradingBotEngine:
                         continue
 
                     # ===== PHASE 1: Fetch Account State =====
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(2)  # Rate limit protection - increased for testnet
                     state = await self.hyperliquid.get_user_state()
                     balance = state['balance']
                     total_value = state['total_value']
@@ -752,7 +756,7 @@ class TradingBotEngine:
                     recent_diary = self._load_recent_diary(limit=10)
 
                     # ===== PHASE 4: Fetch Open Orders =====
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(1)  # Rate limit protection
                     open_orders_raw = await self.hyperliquid.get_open_orders()
                     open_orders = []
                     for o in open_orders_raw:
@@ -782,7 +786,7 @@ class TradingBotEngine:
                     await self._reconcile_active_trades(state['positions'], open_orders_raw)
 
                     # ===== PHASE 6: Fetch Recent Fills =====
-                    await asyncio.sleep(0.3)
+                    await asyncio.sleep(1)  # Rate limit protection
                     fills_raw = await self.hyperliquid.get_recent_fills(limit=50)
                     recent_fills = []
                     for fill in fills_raw[-20:]:
