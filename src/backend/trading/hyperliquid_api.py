@@ -422,3 +422,94 @@ class HyperliquidAPI:
         except (RuntimeError, ValueError, KeyError, ConnectionError, TypeError) as e:
             logging.error("Funding fetch error for %s: %s", asset, e)
             return None
+
+   async def get_candles(self, asset: str, interval: str = "1h", limit: int = 100) -> list:
+        """
+        Fetch OHLCV candle data from Hyperliquid.
+
+        Args:
+            asset: Asset symbol (e.g., "BTC", "ETH")
+            interval: Candle interval ("1m", "5m", "15m", "1h", "4h", "1d")
+            limit: Number of candles to fetch (max 5000)
+
+        Returns:
+            List of candle dicts with keys: timestamp, open, high, low, close, volume
+            Returns empty list on error.
+        """
+        try:
+            # Map interval strings to milliseconds
+            interval_map = {
+                "1m": 60 * 1000,
+                "5m": 5 * 60 * 1000,
+                "15m": 15 * 60 * 1000,
+                "1h": 60 * 60 * 1000,
+                "4h": 4 * 60 * 60 * 1000,
+                "1d": 24 * 60 * 60 * 1000,
+            }
+            
+            interval_ms = interval_map.get(interval, 60 * 60 * 1000)  # Default to 1h
+            
+            # Calculate time range
+            import time
+            end_time = int(time.time() * 1000)
+            start_time = end_time - (limit * interval_ms)
+            
+            # Hyperliquid candleSnapshot request
+            payload = {
+                "type": "candleSnapshot",
+                "req": {
+                    "coin": asset,
+                    "interval": interval,
+                    "startTime": start_time,
+                    "endTime": end_time
+                }
+            }
+            
+            # Make POST request to info endpoint
+            import aiohttp
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{self.base_url}/info",
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=10)
+                ) as resp:
+                    if resp.status != 200:
+                        logging.warning(f"Candle fetch failed for {asset}: HTTP {resp.status}")
+                        return []
+                    
+                    data = await resp.json()
+            
+            # Parse response into standard OHLCV format
+            candles = []
+            if isinstance(data, list):
+                for candle in data:
+                    try:
+                        # Hyperliquid returns: [timestamp, open, high, low, close, volume]
+                        if isinstance(candle, dict):
+                            candles.append({
+                                "timestamp": candle.get("t", 0),
+                                "open": float(candle.get("o", 0)),
+                                "high": float(candle.get("h", 0)),
+                                "low": float(candle.get("l", 0)),
+                                "close": float(candle.get("c", 0)),
+                                "volume": float(candle.get("v", 0))
+                            })
+                        elif isinstance(candle, list) and len(candle) >= 6:
+                            candles.append({
+                                "timestamp": candle[0],
+                                "open": float(candle[1]),
+                                "high": float(candle[2]),
+                                "low": float(candle[3]),
+                                "close": float(candle[4]),
+                                "volume": float(candle[5])
+                            })
+                    except (ValueError, TypeError, IndexError) as e:
+                        logging.debug(f"Error parsing candle: {e}")
+                        continue
+            
+            logging.debug(f"Fetched {len(candles)} candles for {asset} ({interval})")
+            return candles
+            
+        except Exception as e:
+            logging.error(f"Error fetching candles for {asset}: {e}")
+            return []
