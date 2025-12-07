@@ -2,15 +2,19 @@
 Trading Bot Engine - Core trading logic separated from UI
 Refactored from ai-trading-agent/src/main.py
 
-PATCH v4: 
+PATCH v5: 
+- CRITICAL: Fixed TP/SL order parsing - API returns orderType as STRING not dict!
+- CRITICAL: Added position verification before placing TP/SL on HOLD
 - CRITICAL: Startup sync with exchange before any trading
 - CRITICAL: Block trading if sync fails (don't continue with stale data)
 - CRITICAL: Validate TP/SL sanity in code
 - CRITICAL: Handle existing positions on startup
 - Improved rate limit handling with proper backoff
-- NEW v4: TP/SL response validation - check if orders were actually accepted
-- NEW v4: Log actual error messages when TP/SL orders are rejected
-- NEW v4: Handle new structured response format from hyperliquid_api v4
+- v4: TP/SL response validation - check if orders were actually accepted
+- v4: Log actual error messages when TP/SL orders are rejected
+- v5: Fixed parsing of 'orderType': 'Stop Market' vs 'Take Profit Market'
+- v5: Parse triggerPx directly from order, not from nested dict
+- v5: Verify position exists before placing TP/SL on HOLD action
 """
 
 import asyncio
@@ -205,21 +209,26 @@ class TradingBotEngine:
                 # ===== DIAGNOSTIC: Log what we received =====
                 self.logger.info(f"📋 STARTUP: Received {len(open_orders)} open orders")
                 for idx, order in enumerate(open_orders):
-                    order_type = order.get('orderType', {})
                     coin = order.get('coin')
                     oid = order.get('oid')
                     side = order.get('side')
                     sz = order.get('sz')
                     
-                    # Parse trigger info
+                    # Parse trigger info from CORRECT API format
                     trigger_info = "N/A"
-                    if isinstance(order_type, dict) and 'trigger' in order_type:
-                        trigger = order_type.get('trigger', {})
-                        tpsl = trigger.get('tpsl', 'unknown')
-                        trigger_px = trigger.get('triggerPx', 'unknown')
-                        trigger_info = f"{tpsl}@{trigger_px}"
+                    order_type_str = order.get('orderType', '')
+                    trigger_px = order.get('triggerPx')
+                    is_trigger = order.get('isTrigger', False)
                     
-                    self.logger.info(f"  📋 Order[{idx}]: {coin} oid={oid} side={side} sz={sz} trigger={trigger_info}")
+                    if is_trigger and trigger_px:
+                        if 'Take Profit' in str(order_type_str):
+                            trigger_info = f"TP@{trigger_px}"
+                        elif 'Stop' in str(order_type_str):
+                            trigger_info = f"SL@{trigger_px}"
+                        else:
+                            trigger_info = f"trigger@{trigger_px}"
+                    
+                    self.logger.info(f"  📋 Order[{idx}]: {coin} oid={oid} side={side} sz={sz} type={order_type_str} {trigger_info}")
                     self.logger.debug(f"  📋 Order[{idx}] RAW: {order}")
                 
                 # ===== CRITICAL: Import existing positions into active_trades =====
@@ -244,18 +253,41 @@ class TradingBotEngine:
                             order_coin = order.get('coin')
                             if order_coin == asset:
                                 self.logger.debug(f"🔍 Found order for {asset}: {order}")
-                                order_type = order.get('orderType', {})
-                                if isinstance(order_type, dict) and 'trigger' in order_type:
-                                    trigger = order_type.get('trigger', {})
-                                    tpsl = trigger.get('tpsl')
-                                    trigger_px = trigger.get('triggerPx')
-                                    
-                                    if tpsl == 'tp':
+                                
+                                # API returns orderType as STRING, not dict!
+                                # Examples: "Stop Market", "Take Profit Market", "Limit"
+                                order_type_str = order.get('orderType', '')
+                                trigger_px = order.get('triggerPx')  # Direct field, not nested!
+                                trigger_condition = order.get('triggerCondition', '')
+                                is_trigger = order.get('isTrigger', False)
+                                
+                                if is_trigger and trigger_px:
+                                    # Determine if TP or SL from orderType string or triggerCondition
+                                    if 'Take Profit' in order_type_str or 'above' in trigger_condition.lower():
                                         tp_oid = order.get('oid')
                                         tp_price = float(trigger_px) if trigger_px else None
-                                    elif tpsl == 'sl':
+                                        self.logger.debug(f"  → Identified as TP: oid={tp_oid}, price={tp_price}")
+                                    elif 'Stop' in order_type_str or 'below' in trigger_condition.lower():
                                         sl_oid = order.get('oid')
                                         sl_price = float(trigger_px) if trigger_px else None
+                                        self.logger.debug(f"  → Identified as SL: oid={sl_oid}, price={sl_price}")
+                                
+                                # FALLBACK: Also check old format (orderType as dict) for compatibility
+                                if not (tp_oid or sl_oid):  # Only if not already found
+                                    order_type_dict = order.get('orderType', {})
+                                    if isinstance(order_type_dict, dict) and 'trigger' in order_type_dict:
+                                        trigger = order_type_dict.get('trigger', {})
+                                        tpsl = trigger.get('tpsl')
+                                        trigger_px_old = trigger.get('triggerPx')
+                                        
+                                        if tpsl == 'tp' and not tp_oid:
+                                            tp_oid = order.get('oid')
+                                            tp_price = float(trigger_px_old) if trigger_px_old else None
+                                            self.logger.debug(f"  → (fallback) Identified as TP: oid={tp_oid}")
+                                        elif tpsl == 'sl' and not sl_oid:
+                                            sl_oid = order.get('oid')
+                                            sl_price = float(trigger_px_old) if trigger_px_old else None
+                                            self.logger.debug(f"  → (fallback) Identified as SL: oid={sl_oid}")
                         
                         trade_entry = {
                             'asset': asset,
@@ -576,18 +608,33 @@ class TradingBotEngine:
                 
                 for order in open_orders_raw:
                     if order.get('coin') == asset:
-                        order_type = order.get('orderType', {})
-                        if isinstance(order_type, dict) and 'trigger' in order_type:
-                            trigger = order_type.get('trigger', {})
-                            tpsl = trigger.get('tpsl')
-                            trigger_px = trigger.get('triggerPx')
-                            
-                            if tpsl == 'tp':
+                        # API returns orderType as STRING, not dict!
+                        order_type_str = order.get('orderType', '')
+                        trigger_px = order.get('triggerPx')  # Direct field
+                        trigger_condition = order.get('triggerCondition', '')
+                        is_trigger = order.get('isTrigger', False)
+                        
+                        if is_trigger and trigger_px:
+                            if 'Take Profit' in str(order_type_str) or 'above' in trigger_condition.lower():
                                 tp_oid = order.get('oid')
                                 tp_price = float(trigger_px) if trigger_px else None
-                            elif tpsl == 'sl':
+                            elif 'Stop' in str(order_type_str) or 'below' in trigger_condition.lower():
                                 sl_oid = order.get('oid')
                                 sl_price = float(trigger_px) if trigger_px else None
+                        
+                        # FALLBACK: Also check old format (orderType as dict)
+                        order_type_dict = order.get('orderType', {})
+                        if isinstance(order_type_dict, dict) and 'trigger' in order_type_dict:
+                            trigger = order_type_dict.get('trigger', {})
+                            tpsl = trigger.get('tpsl')
+                            trigger_px_old = trigger.get('triggerPx')
+                            
+                            if tpsl == 'tp' and not tp_oid:
+                                tp_oid = order.get('oid')
+                                tp_price = float(trigger_px_old) if trigger_px_old else None
+                            elif tpsl == 'sl' and not sl_oid:
+                                sl_oid = order.get('oid')
+                                sl_price = float(trigger_px_old) if trigger_px_old else None
                 
                 tp_info = f"TP@${tp_price:,.2f}" if tp_price else "no TP"
                 sl_info = f"SL@${sl_price:,.2f}" if sl_price else "no SL"
@@ -1337,10 +1384,29 @@ class TradingBotEngine:
                             
                             if tracked_trade and (tp_price or sl_price):
                                 try:
+                                    # ===== CRITICAL: Verify position still exists before placing TP/SL =====
+                                    real_pos = await self._get_real_position(asset)
+                                    if not real_pos:
+                                        self.logger.warning(f"⚠️ Position for {asset} no longer exists! Removing from tracking.")
+                                        self.active_trades = [t for t in self.active_trades if t['asset'] != asset]
+                                        self._write_diary_entry({
+                                            'timestamp': datetime.now(UTC).isoformat(),
+                                            'asset': asset,
+                                            'action': 'hold_position_closed',
+                                            'note': 'Position was closed (likely by TP/SL) before HOLD update'
+                                        })
+                                        continue  # Skip to next asset
+                                    
                                     await asyncio.sleep(0.3)
                                     current_price = await self.hyperliquid.get_current_price(asset)
                                     is_long = tracked_trade.get('is_long', True)
                                     amount = tracked_trade.get('amount', 0)
+                                    
+                                    # Update amount from actual position if different
+                                    if abs(amount - real_pos['size']) > 0.0001:
+                                        self.logger.info(f"📐 Updating {asset} size from {amount} to {real_pos['size']}")
+                                        amount = real_pos['size']
+                                        tracked_trade['amount'] = amount
                                     
                                     # Validate TP/SL
                                     action_for_validation = 'buy' if is_long else 'sell'
