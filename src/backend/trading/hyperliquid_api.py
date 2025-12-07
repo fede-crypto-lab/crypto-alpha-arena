@@ -4,12 +4,18 @@ This module wraps the Hyperliquid `Exchange` and `Info` SDK classes to provide a
 single entry point for submitting trades, managing orders, and retrieving market
 state.  It normalizes retry behaviour, adds logging, and caches metadata so that
 the trading agent can depend on predictable, non-blocking IO.
+
+V4 CHANGES:
+- Added response logging and validation for place_take_profit
+- Added response logging and validation for place_stop_loss  
+- Both methods now log the actual API response and check for errors
+- Added helper method _validate_order_response for consistent validation
 """
 
 import asyncio
 import logging
 import aiohttp
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Dict, Any, Optional, Tuple
 from src.backend.config_loader import CONFIG
 from hyperliquid.exchange import Exchange
 from hyperliquid.info import Info
@@ -165,6 +171,49 @@ class HyperliquidAPI:
                 return round(amount, decimals)
         return round(amount, 8)
 
+    def _validate_order_response(self, result: Any, asset: str, order_type: str) -> Tuple[bool, Optional[int], Optional[str]]:
+        """Validate an order response from the exchange.
+        
+        Args:
+            result: Raw response from exchange.order()
+            asset: Asset symbol for logging
+            order_type: "TP" or "SL" for logging
+            
+        Returns:
+            Tuple of (success: bool, oid: Optional[int], error_message: Optional[str])
+        """
+        if not isinstance(result, dict):
+            return False, None, f"Unexpected response type: {type(result)}"
+        
+        status = result.get("status")
+        
+        if status == "err":
+            error_msg = result.get("response", "unknown error")
+            logging.error(f"❌ {order_type} order REJECTED for {asset}: {error_msg}")
+            return False, None, str(error_msg)
+        
+        if status == "ok":
+            oids = self.extract_oids(result)
+            if oids:
+                logging.info(f"✅ {order_type} order CONFIRMED for {asset}, oid: {oids[0]}")
+                return True, oids[0], None
+            else:
+                # Check if order was filled immediately (unlikely for TP/SL but possible)
+                response_data = result.get("response", {})
+                if isinstance(response_data, dict):
+                    data = response_data.get("data", {})
+                    statuses = data.get("statuses", [])
+                    for st in statuses:
+                        if "error" in st:
+                            logging.error(f"❌ {order_type} order error for {asset}: {st['error']}")
+                            return False, None, st["error"]
+                
+                logging.warning(f"⚠️ {order_type} order returned ok but no oid found for {asset}: {result}")
+                return False, None, "No order ID in response"
+        
+        logging.warning(f"⚠️ {order_type} order unknown status for {asset}: {result}")
+        return False, None, f"Unknown status: {status}"
+
     async def place_buy_order(self, asset, amount, slippage=0.01):
         """Submit a market buy order with exchange-side rounding and retry logic.
 
@@ -193,7 +242,7 @@ class HyperliquidAPI:
         amount = self.round_size(asset, amount)
         return await self._retry(lambda: self.exchange.market_open(asset, False, amount, None, slippage))
 
-    async def place_take_profit(self, asset, is_buy, amount, tp_price):
+    async def place_take_profit(self, asset, is_buy, amount, tp_price) -> Dict[str, Any]:
         """Create a reduce-only trigger order that executes a take-profit exit.
 
         Args:
@@ -204,13 +253,33 @@ class HyperliquidAPI:
             tp_price: Trigger price for the take-profit order.
 
         Returns:
-            Raw SDK response from `Exchange.order`.
+            Dict with keys:
+                - 'success': bool
+                - 'oid': int or None
+                - 'error': str or None  
+                - 'raw_response': original API response
         """
         amount = self.round_size(asset, amount)
         order_type = {"trigger": {"triggerPx": tp_price, "isMarket": True, "tpsl": "tp"}}
-        return await self._retry(lambda: self.exchange.order(asset, not is_buy, amount, tp_price, order_type, True))
+        
+        logging.info(f"📤 Placing TP order: {asset} {'LONG→SELL' if is_buy else 'SHORT→BUY'} {amount} @ {tp_price}")
+        
+        result = await self._retry(lambda: self.exchange.order(asset, not is_buy, amount, tp_price, order_type, True))
+        
+        # Log full response for debugging
+        logging.debug(f"TP order raw response for {asset}: {result}")
+        
+        # Validate and extract result
+        success, oid, error = self._validate_order_response(result, asset, "TP")
+        
+        return {
+            "success": success,
+            "oid": oid,
+            "error": error,
+            "raw_response": result
+        }
 
-    async def place_stop_loss(self, asset, is_buy, amount, sl_price):
+    async def place_stop_loss(self, asset, is_buy, amount, sl_price) -> Dict[str, Any]:
         """Create a reduce-only trigger order that executes a stop-loss exit.
 
         Args:
@@ -221,11 +290,31 @@ class HyperliquidAPI:
             sl_price: Trigger price for the stop-loss order.
 
         Returns:
-            Raw SDK response from `Exchange.order`.
+            Dict with keys:
+                - 'success': bool
+                - 'oid': int or None
+                - 'error': str or None
+                - 'raw_response': original API response
         """
         amount = self.round_size(asset, amount)
         order_type = {"trigger": {"triggerPx": sl_price, "isMarket": True, "tpsl": "sl"}}
-        return await self._retry(lambda: self.exchange.order(asset, not is_buy, amount, sl_price, order_type, True))
+        
+        logging.info(f"📤 Placing SL order: {asset} {'LONG→SELL' if is_buy else 'SHORT→BUY'} {amount} @ {sl_price}")
+        
+        result = await self._retry(lambda: self.exchange.order(asset, not is_buy, amount, sl_price, order_type, True))
+        
+        # Log full response for debugging
+        logging.debug(f"SL order raw response for {asset}: {result}")
+        
+        # Validate and extract result
+        success, oid, error = self._validate_order_response(result, asset, "SL")
+        
+        return {
+            "success": success,
+            "oid": oid,
+            "error": error,
+            "raw_response": result
+        }
 
     async def cancel_order(self, asset, oid):
         """Cancel a single order by identifier for a given asset.
@@ -513,4 +602,3 @@ class HyperliquidAPI:
         except Exception as e:
             logging.error(f"Error fetching candles for {asset}: {e}")
             return []
-
