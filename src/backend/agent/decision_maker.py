@@ -66,6 +66,38 @@ class TradingAgent:
             logging.info("Stripped markdown code blocks from LLM response")
         return content
 
+    def _parse_first_json_object(self, text: str) -> dict:
+        """Parse the first valid JSON object from text, ignoring trailing content.
+        
+        Gemini and other models sometimes append explanatory text after valid JSON.
+        This uses raw_decode() to extract just the first JSON object.
+        
+        Args:
+            text: Raw text that may contain JSON followed by other content
+            
+        Returns:
+            Parsed JSON dict
+            
+        Raises:
+            json.JSONDecodeError: If no valid JSON found
+        """
+        text = text.strip()
+        # First strip any markdown code blocks
+        text = self._strip_markdown_code_blocks(text)
+        
+        try:
+            decoder = json.JSONDecoder()
+            obj, end_idx = decoder.raw_decode(text)
+            if end_idx < len(text):
+                trailing = text[end_idx:].strip()
+                if trailing:
+                    logging.info(f"Parsed JSON object at position 0-{end_idx}, ignored {len(text) - end_idx} chars of trailing content")
+            return obj
+        except json.JSONDecodeError as e:
+            logging.warning(f"raw_decode failed at position {e.pos}: {e.msg}")
+            # Re-raise to let caller handle
+            raise
+
     def _decide(self, context, assets):
         """Dispatch decision request to the LLM and enforce output contract."""
         system_prompt = (
@@ -492,9 +524,14 @@ class TradingAgent:
                     parsed = message.get("parsed")
                 else:
                     content = message.get("content") or "{}"
-                    # ===== FIX: Strip markdown code blocks (Gemini wraps JSON in ```json ... ```) =====
-                    content = self._strip_markdown_code_blocks(content)
-                    parsed = json.loads(content)
+                    # ===== FIX: Extract first JSON object, ignoring trailing content (Gemini issue) =====
+                    try:
+                        parsed = self._parse_first_json_object(content)
+                    except json.JSONDecodeError:
+                        # Fallback: try stripping markdown and standard parse
+                        logging.warning("_parse_first_json_object failed, trying fallback parse")
+                        content = self._strip_markdown_code_blocks(content)
+                        parsed = json.loads(content)
 
                 if not isinstance(parsed, dict):
                     logging.error("Expected dict payload, got: %s; attempting sanitize", type(parsed))
@@ -534,9 +571,12 @@ class TradingAgent:
                     return sanitized
                 return {"reasoning": reasoning_text, "trade_decisions": []}
             except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
-                logging.error("JSON parse error: %s, content: %s", e, content[:200])
+                logging.error("JSON parse error: %s", e)
+                # Log content for debugging (truncated)
+                content_preview = content[:500] if 'content' in locals() else "N/A"
+                logging.error("Content preview: %s", content_preview)
                 # Try sanitizer as last resort
-                sanitized = _sanitize_output(content, assets)
+                sanitized = _sanitize_output(content if 'content' in locals() else "{}", assets)
                 if sanitized.get("trade_decisions"):
                     return sanitized
                 return {
