@@ -2,12 +2,15 @@
 Trading Bot Engine - Core trading logic separated from UI
 Refactored from ai-trading-agent/src/main.py
 
-PATCH v3: 
+PATCH v4: 
 - CRITICAL: Startup sync with exchange before any trading
 - CRITICAL: Block trading if sync fails (don't continue with stale data)
 - CRITICAL: Validate TP/SL sanity in code
 - CRITICAL: Handle existing positions on startup
 - Improved rate limit handling with proper backoff
+- NEW v4: TP/SL response validation - check if orders were actually accepted
+- NEW v4: Log actual error messages when TP/SL orders are rejected
+- NEW v4: Handle new structured response format from hyperliquid_api v4
 """
 
 import asyncio
@@ -1175,12 +1178,24 @@ class TradingBotEngine:
                                         try:
                                             is_buy = (action == 'buy')
                                             await asyncio.sleep(0.3)
-                                            tp_order = await self.hyperliquid.place_take_profit(
+                                            tp_result = await self.hyperliquid.place_take_profit(
                                                 asset, is_buy, amount, tp_price
                                             )
-                                            oids = self.hyperliquid.extract_oids(tp_order)
-                                            tp_oid = oids[0] if oids else None
-                                            self.logger.info(f"Placed TP order for {asset} @ {tp_price}")
+                                            # V4: Check structured response
+                                            if isinstance(tp_result, dict) and tp_result.get('success'):
+                                                tp_oid = tp_result.get('oid')
+                                                self.logger.info(f"✅ Placed TP order for {asset} @ {tp_price} (oid: {tp_oid})")
+                                            elif isinstance(tp_result, dict):
+                                                self.logger.error(f"❌ TP order REJECTED for {asset}: {tp_result.get('error', 'unknown')}")
+                                                tp_oid = None
+                                            else:
+                                                # Fallback for old API format
+                                                oids = self.hyperliquid.extract_oids(tp_result)
+                                                tp_oid = oids[0] if oids else None
+                                                if tp_oid:
+                                                    self.logger.info(f"✅ Placed TP order for {asset} @ {tp_price}")
+                                                else:
+                                                    self.logger.warning(f"⚠️ TP order for {asset} - no OID returned")
                                         except Exception as e:
                                             self.logger.error(f"Failed to place TP: {e}")
 
@@ -1188,12 +1203,24 @@ class TradingBotEngine:
                                         try:
                                             is_buy = (action == 'buy')
                                             await asyncio.sleep(0.3)
-                                            sl_order = await self.hyperliquid.place_stop_loss(
+                                            sl_result = await self.hyperliquid.place_stop_loss(
                                                 asset, is_buy, amount, sl_price
                                             )
-                                            oids = self.hyperliquid.extract_oids(sl_order)
-                                            sl_oid = oids[0] if oids else None
-                                            self.logger.info(f"Placed SL order for {asset} @ {sl_price}")
+                                            # V4: Check structured response
+                                            if isinstance(sl_result, dict) and sl_result.get('success'):
+                                                sl_oid = sl_result.get('oid')
+                                                self.logger.info(f"✅ Placed SL order for {asset} @ {sl_price} (oid: {sl_oid})")
+                                            elif isinstance(sl_result, dict):
+                                                self.logger.error(f"❌ SL order REJECTED for {asset}: {sl_result.get('error', 'unknown')}")
+                                                sl_oid = None
+                                            else:
+                                                # Fallback for old API format
+                                                oids = self.hyperliquid.extract_oids(sl_result)
+                                                sl_oid = oids[0] if oids else None
+                                                if sl_oid:
+                                                    self.logger.info(f"✅ Placed SL order for {asset} @ {sl_price}")
+                                                else:
+                                                    self.logger.warning(f"⚠️ SL order for {asset} - no OID returned")
                                         except Exception as e:
                                             self.logger.error(f"Failed to place SL: {e}")
 
@@ -1318,12 +1345,24 @@ class TradingBotEngine:
                                         if validated_tp:
                                             try:
                                                 await asyncio.sleep(0.3)
-                                                tp_order = await self.hyperliquid.place_take_profit(
+                                                tp_result = await self.hyperliquid.place_take_profit(
                                                     asset, is_long, amount, validated_tp
                                                 )
-                                                oids = self.hyperliquid.extract_oids(tp_order)
-                                                tp_oid = oids[0] if oids else None
-                                                self.logger.info(f"✅ Placed TP order for {asset} @ {validated_tp}")
+                                                # V4: Check structured response
+                                                if isinstance(tp_result, dict) and tp_result.get('success'):
+                                                    tp_oid = tp_result.get('oid')
+                                                    self.logger.info(f"✅ Placed TP order for {asset} @ {validated_tp} (oid: {tp_oid})")
+                                                elif isinstance(tp_result, dict):
+                                                    self.logger.error(f"❌ TP order REJECTED for {asset}: {tp_result.get('error', 'unknown')}")
+                                                    tp_oid = None
+                                                else:
+                                                    # Fallback for old API format
+                                                    oids = self.hyperliquid.extract_oids(tp_result)
+                                                    tp_oid = oids[0] if oids else None
+                                                    if tp_oid:
+                                                        self.logger.info(f"✅ Placed TP order for {asset} @ {validated_tp}")
+                                                    else:
+                                                        self.logger.warning(f"⚠️ TP order for {asset} - no OID returned")
                                             except Exception as e:
                                                 self.logger.error(f"Failed to place TP: {e}")
                                         
@@ -1332,12 +1371,24 @@ class TradingBotEngine:
                                         if validated_sl:
                                             try:
                                                 await asyncio.sleep(0.3)
-                                                sl_order = await self.hyperliquid.place_stop_loss(
+                                                sl_result = await self.hyperliquid.place_stop_loss(
                                                     asset, is_long, amount, validated_sl
                                                 )
-                                                oids = self.hyperliquid.extract_oids(sl_order)
-                                                sl_oid = oids[0] if oids else None
-                                                self.logger.info(f"✅ Placed SL order for {asset} @ {validated_sl}")
+                                                # V4: Check structured response
+                                                if isinstance(sl_result, dict) and sl_result.get('success'):
+                                                    sl_oid = sl_result.get('oid')
+                                                    self.logger.info(f"✅ Placed SL order for {asset} @ {validated_sl} (oid: {sl_oid})")
+                                                elif isinstance(sl_result, dict):
+                                                    self.logger.error(f"❌ SL order REJECTED for {asset}: {sl_result.get('error', 'unknown')}")
+                                                    sl_oid = None
+                                                else:
+                                                    # Fallback for old API format
+                                                    oids = self.hyperliquid.extract_oids(sl_result)
+                                                    sl_oid = oids[0] if oids else None
+                                                    if sl_oid:
+                                                        self.logger.info(f"✅ Placed SL order for {asset} @ {validated_sl}")
+                                                    else:
+                                                        self.logger.warning(f"⚠️ SL order for {asset} - no OID returned")
                                             except Exception as e:
                                                 self.logger.error(f"Failed to place SL: {e}")
                                         
@@ -1630,12 +1681,24 @@ class TradingBotEngine:
                 try:
                     is_buy = (proposal.action == 'buy')
                     await asyncio.sleep(0.3)
-                    tp_order = await self.hyperliquid.place_take_profit(
+                    tp_result = await self.hyperliquid.place_take_profit(
                         proposal.asset, is_buy, amount, validation['tp_price']
                     )
-                    oids = self.hyperliquid.extract_oids(tp_order)
-                    tp_oid = oids[0] if oids else None
-                    self.logger.info(f"Placed TP order @ {validation['tp_price']}")
+                    # V4: Check structured response
+                    if isinstance(tp_result, dict) and tp_result.get('success'):
+                        tp_oid = tp_result.get('oid')
+                        self.logger.info(f"✅ Placed TP order @ {validation['tp_price']} (oid: {tp_oid})")
+                    elif isinstance(tp_result, dict):
+                        self.logger.error(f"❌ TP order REJECTED: {tp_result.get('error', 'unknown')}")
+                        tp_oid = None
+                    else:
+                        # Fallback for old API format
+                        oids = self.hyperliquid.extract_oids(tp_result)
+                        tp_oid = oids[0] if oids else None
+                        if tp_oid:
+                            self.logger.info(f"✅ Placed TP order @ {validation['tp_price']}")
+                        else:
+                            self.logger.warning(f"⚠️ TP order - no OID returned")
                 except Exception as e:
                     self.logger.error(f"Failed to place TP: {e}")
             
@@ -1643,12 +1706,24 @@ class TradingBotEngine:
                 try:
                     is_buy = (proposal.action == 'buy')
                     await asyncio.sleep(0.3)
-                    sl_order = await self.hyperliquid.place_stop_loss(
+                    sl_result = await self.hyperliquid.place_stop_loss(
                         proposal.asset, is_buy, amount, validation['sl_price']
                     )
-                    oids = self.hyperliquid.extract_oids(sl_order)
-                    sl_oid = oids[0] if oids else None
-                    self.logger.info(f"Placed SL order @ {validation['sl_price']}")
+                    # V4: Check structured response
+                    if isinstance(sl_result, dict) and sl_result.get('success'):
+                        sl_oid = sl_result.get('oid')
+                        self.logger.info(f"✅ Placed SL order @ {validation['sl_price']} (oid: {sl_oid})")
+                    elif isinstance(sl_result, dict):
+                        self.logger.error(f"❌ SL order REJECTED: {sl_result.get('error', 'unknown')}")
+                        sl_oid = None
+                    else:
+                        # Fallback for old API format
+                        oids = self.hyperliquid.extract_oids(sl_result)
+                        sl_oid = oids[0] if oids else None
+                        if sl_oid:
+                            self.logger.info(f"✅ Placed SL order @ {validation['sl_price']}")
+                        else:
+                            self.logger.warning(f"⚠️ SL order - no OID returned")
                 except Exception as e:
                     self.logger.error(f"Failed to place SL: {e}")
             
