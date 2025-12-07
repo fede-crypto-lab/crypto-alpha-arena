@@ -1,4 +1,7 @@
-"""Decision-making agent that orchestrates LLM prompts and indicator lookups."""
+"""Decision-making agent that orchestrates LLM prompts and indicator lookups.
+
+PATCH v2: Fixed _sanitize_output to preserve reasoning from original content.
+"""
 
 import requests
 from requests.exceptions import ChunkedEncodingError, ConnectionError as RequestsConnectionError, Timeout
@@ -7,6 +10,7 @@ from src.backend.config_loader import CONFIG
 from src.backend.indicators.taapi_client import TAAPIClient
 import json
 import logging
+import re
 from datetime import datetime
 
 class TradingAgent:
@@ -22,7 +26,7 @@ class TradingAgent:
         self.app_title = CONFIG.get("openrouter_app_title")
         self.taapi = TAAPIClient()
         # Fast/cheap sanitizer model to normalize outputs on parse failures
-        self.sanitize_model = CONFIG.get("sanitize_model") or "openai/gpt-5"
+        self.sanitize_model = CONFIG.get("sanitize_model") or "openai/gpt-4o-mini"
 
         # Detect models that don't support structured outputs (response_format)
         # DeepSeek via OpenRouter returns "This response_format type is unavailable now"
@@ -65,6 +69,48 @@ class TradingAgent:
                 content = content[:-3].strip()
             logging.info("Stripped markdown code blocks from LLM response")
         return content
+
+    def _extract_reasoning_from_content(self, content: str) -> str:
+        """Extract reasoning text from raw LLM content.
+        
+        Tries multiple strategies:
+        1. Parse as JSON and get 'reasoning' field
+        2. Look for reasoning patterns in text
+        3. Return truncated content as fallback
+        """
+        # Strategy 1: Try to parse as JSON
+        try:
+            cleaned = self._strip_markdown_code_blocks(content)
+            parsed = json.loads(cleaned)
+            if isinstance(parsed, dict) and parsed.get("reasoning"):
+                return parsed["reasoning"]
+        except (json.JSONDecodeError, TypeError, ValueError):
+            pass
+        
+        # Strategy 2: Look for "reasoning": "..." pattern
+        try:
+            match = re.search(r'"reasoning"\s*:\s*"([^"]*(?:\\.[^"]*)*)"', content, re.DOTALL)
+            if match:
+                # Unescape the string
+                reasoning = match.group(1).replace('\\"', '"').replace('\\n', '\n')
+                if len(reasoning) > 50:  # Only use if substantial
+                    return reasoning
+        except Exception:
+            pass
+        
+        # Strategy 3: Look for analysis text before JSON
+        try:
+            # Find where JSON starts
+            json_start = content.find('{')
+            if json_start > 100:  # There's substantial text before JSON
+                pre_json = content[:json_start].strip()
+                if len(pre_json) > 50:
+                    return pre_json[:1000]  # Truncate if too long
+        except Exception:
+            pass
+        
+        # Fallback: return empty (don't pollute with garbage)
+        return ""
 
     def _parse_first_json_object(self, text: str) -> dict:
         """Parse the first valid JSON object from text, ignoring trailing content.
@@ -273,8 +319,16 @@ class TradingAgent:
             logging.error("All %d retry attempts failed. Last error: %s", max_retries, last_error)
             raise last_error or requests.RequestException("Unknown error after retries")
 
-        def _sanitize_output(raw_content: str, assets_list):
-            """Coerce arbitrary LLM output into the required reasoning + decisions schema."""
+        # ===== FIXED: Improved sanitize function that preserves reasoning =====
+        def _sanitize_output(raw_content: str, assets_list, original_reasoning: str = ""):
+            """Coerce arbitrary LLM output into the required reasoning + decisions schema.
+            
+            FIXED: Now preserves reasoning from original content and uses correct prompt.
+            """
+            # First, try to extract reasoning from the raw content if not provided
+            if not original_reasoning:
+                original_reasoning = self._extract_reasoning_from_content(raw_content)
+            
             try:
                 schema = {
                     "type": "object",
@@ -302,14 +356,30 @@ class TradingAgent:
                     "required": ["reasoning", "trade_decisions"],
                     "additionalProperties": False,
                 }
+                
+                # FIXED: Better system prompt that preserves reasoning
+                system_content = (
+                    "You are a strict JSON normalizer for trading decisions. "
+                    "Extract and return a JSON OBJECT (not array) with exactly two fields:\n"
+                    "1. 'reasoning': A string containing the analysis/reasoning from the input. "
+                    "PRESERVE the original reasoning text if present, do not summarize or shorten it.\n"
+                    "2. 'trade_decisions': An array of trade decision objects.\n\n"
+                    "If the input has a 'reasoning' field, copy it exactly. "
+                    "If reasoning is embedded in prose before the JSON, extract and include it. "
+                    "Each trade decision must have: asset, action, allocation_usd, tp_price, sl_price, exit_plan, rationale.\n"
+                    "Fix any formatting issues but preserve all substantive content."
+                )
+                
+                # Include hint about original reasoning if we extracted it
+                user_content = raw_content
+                if original_reasoning and original_reasoning not in raw_content:
+                    user_content = f"Original reasoning to preserve:\n{original_reasoning}\n\nContent to normalize:\n{raw_content}"
+                
                 payload = {
                     "model": self.sanitize_model,
                     "messages": [
-                        {"role": "system", "content": (
-                            "You are a strict JSON normalizer. Return ONLY a JSON array matching the provided JSON Schema. "
-                            "If input is wrapped or has prose/markdown, fix it. Do not add fields."
-                        )},
-                        {"role": "user", "content": raw_content},
+                        {"role": "system", "content": system_content},
+                        {"role": "user", "content": user_content},
                     ],
                     "response_format": {
                         "type": "json_schema",
@@ -325,20 +395,30 @@ class TradingAgent:
                 msg = resp.get("choices", [{}])[0].get("message", {})
                 parsed = msg.get("parsed")
                 if isinstance(parsed, dict):
+                    # Ensure reasoning is preserved
+                    if not parsed.get("reasoning") and original_reasoning:
+                        parsed["reasoning"] = original_reasoning
                     if "trade_decisions" in parsed:
+                        logging.info("Sanitizer preserved reasoning: %s chars", len(parsed.get("reasoning", "")))
                         return parsed
                 # fallback: try content
-                content = msg.get("content") or "[]"
+                content = msg.get("content") or "{}"
                 try:
                     loaded = json.loads(content)
-                    if isinstance(loaded, dict) and "trade_decisions" in loaded:
-                        return loaded
+                    if isinstance(loaded, dict):
+                        if not loaded.get("reasoning") and original_reasoning:
+                            loaded["reasoning"] = original_reasoning
+                        if "trade_decisions" in loaded:
+                            return loaded
                 except (json.JSONDecodeError, KeyError, ValueError, TypeError):
                     pass
-                return {"reasoning": "", "trade_decisions": []}
+                
+                # Last resort: return with preserved reasoning
+                return {"reasoning": original_reasoning, "trade_decisions": []}
             except (requests.RequestException, json.JSONDecodeError, KeyError, ValueError, TypeError) as se:
                 logging.error("Sanitize failed: %s", se)
-                return {"reasoning": "", "trade_decisions": []}
+                return {"reasoning": original_reasoning, "trade_decisions": []}
+        # ===== END FIXED =====
 
         allow_tools = True
         # Use instance variable to determine structured output support (set in __init__)
@@ -518,12 +598,15 @@ class TradingAgent:
                             })
                 continue
 
+            # Store raw content for potential reasoning extraction
+            raw_content = message.get("content") or "{}"
+            
             try:
                 # Prefer parsed field from structured outputs if present
                 if isinstance(message.get("parsed"), dict):
                     parsed = message.get("parsed")
                 else:
-                    content = message.get("content") or "{}"
+                    content = raw_content
                     # ===== FIX: Extract first JSON object, ignoring trailing content (Gemini issue) =====
                     try:
                         parsed = self._parse_first_json_object(content)
@@ -535,7 +618,7 @@ class TradingAgent:
 
                 if not isinstance(parsed, dict):
                     logging.error("Expected dict payload, got: %s; attempting sanitize", type(parsed))
-                    sanitized = _sanitize_output(content if 'content' in locals() else json.dumps(parsed), assets)
+                    sanitized = _sanitize_output(raw_content, assets)
                     if sanitized.get("trade_decisions"):
                         return sanitized
                     return {"reasoning": "", "trade_decisions": []}
@@ -565,22 +648,28 @@ class TradingAgent:
                             })
                     return {"reasoning": reasoning_text, "trade_decisions": normalized}
 
+                # ===== FIXED: Pass reasoning to sanitizer =====
                 logging.error("trade_decisions missing or invalid; attempting sanitize")
-                sanitized = _sanitize_output(content if 'content' in locals() else json.dumps(parsed), assets)
+                sanitized = _sanitize_output(raw_content, assets, original_reasoning=reasoning_text)
                 if sanitized.get("trade_decisions"):
                     return sanitized
-                return {"reasoning": reasoning_text, "trade_decisions": []}
+                return {"reasoning": reasoning_text or sanitized.get("reasoning", ""), "trade_decisions": []}
+                
             except (json.JSONDecodeError, KeyError, ValueError, TypeError) as e:
                 logging.error("JSON parse error: %s", e)
                 # Log content for debugging (truncated)
-                content_preview = content[:500] if 'content' in locals() else "N/A"
+                content_preview = raw_content[:500] if raw_content else "N/A"
                 logging.error("Content preview: %s", content_preview)
+                
+                # ===== FIXED: Extract reasoning before sanitizing =====
+                extracted_reasoning = self._extract_reasoning_from_content(raw_content)
+                
                 # Try sanitizer as last resort
-                sanitized = _sanitize_output(content if 'content' in locals() else "{}", assets)
+                sanitized = _sanitize_output(raw_content, assets, original_reasoning=extracted_reasoning)
                 if sanitized.get("trade_decisions"):
                     return sanitized
                 return {
-                    "reasoning": "Parse error",
+                    "reasoning": extracted_reasoning or "Parse error",
                     "trade_decisions": [{
                         "asset": a,
                         "action": "hold",
@@ -588,7 +677,7 @@ class TradingAgent:
                         "tp_price": None,
                         "sl_price": None,
                         "exit_plan": "",
-                        "rationale": "Parse error"
+                        "rationale": "Parse error - holding for safety"
                     } for a in assets]
                 }
 
