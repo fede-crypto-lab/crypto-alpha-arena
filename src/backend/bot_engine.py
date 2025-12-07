@@ -2,11 +2,12 @@
 Trading Bot Engine - Core trading logic separated from UI
 Refactored from ai-trading-agent/src/main.py
 
-PATCH v2: 
-- Added orphan order cleanup
-- Added pre-trade position verification  
-- Improved state sync to prevent stale position decisions
-- Fixed position size mismatch issues
+PATCH v3: 
+- CRITICAL: Startup sync with exchange before any trading
+- CRITICAL: Block trading if sync fails (don't continue with stale data)
+- CRITICAL: Validate TP/SL sanity in code
+- CRITICAL: Handle existing positions on startup
+- Improved rate limit handling with proper backoff
 """
 
 import asyncio
@@ -39,8 +40,8 @@ class BotState:
     active_trades: List[Dict] = field(default_factory=list)
     open_orders: List[Dict] = field(default_factory=list)
     recent_fills: List[Dict] = field(default_factory=list)
-    market_data: List[Dict] = field(default_factory=list)  # Market data for dashboard
-    pending_proposals: List[Dict] = field(default_factory=list)  # Pending trade proposals (manual mode)
+    market_data: List[Dict] = field(default_factory=list)
+    pending_proposals: List[Dict] = field(default_factory=list)
     last_reasoning: Dict = field(default_factory=dict)
     last_update: str = ""
     error: Optional[str] = None
@@ -61,23 +62,12 @@ class TradingBotEngine:
         on_trade_executed: Optional[Callable[[Dict], None]] = None,
         on_error: Optional[Callable[[str], None]] = None,
     ):
-        """
-        Initialize trading bot engine.
-
-        Args:
-            assets: List of trading assets (e.g., ["BTC", "ETH"])
-            interval: Trading interval (e.g., "5m", "1h")
-            on_state_update: Callback for state updates
-            on_trade_executed: Callback when trade is executed
-            on_error: Callback for errors
-        """
         self.assets = assets
         self.interval = interval
         self.on_state_update = on_state_update
         self.on_trade_executed = on_trade_executed
         self.on_error = on_error
 
-        # Logging (initialize first!)
         logging.basicConfig(
             level=logging.INFO,
             format="%(asctime)s [%(levelname)s] %(message)s",
@@ -88,39 +78,66 @@ class TradingBotEngine:
         )
         self.logger = logging.getLogger(__name__)
 
-        # Initialize trading components
         self.taapi = TAAPIClient()
         self.hyperliquid = HyperliquidAPI()
         self.agent = TradingAgent()
-        # Initialize enhanced market context
         self.enhanced_context = EnhancedMarketContext(
-            sentiment_cache_ttl=3600,   # 1 hour
-            whale_cache_ttl=300         # 5 minutes
+            sentiment_cache_ttl=3600,
+            whale_cache_ttl=300
         )
         self.logger.info("EnhancedMarketContext initialized")
 
-        # Bot state
         self.state = BotState()
         self.is_running = False
         self._task: Optional[asyncio.Task] = None
 
-        # Internal state tracking (from original main.py)
         self.start_time: Optional[datetime] = None
         self.invocation_count = 0
-        self.trade_log: List[float] = []  # For Sharpe calculation
-        self.active_trades: List[Dict] = []  # Local tracking of open positions
+        self.trade_log: List[float] = []
+        self.active_trades: List[Dict] = []
         self.recent_events: deque = deque(maxlen=200)
         self.initial_account_value: Optional[float] = None
         self.price_history: Dict[str, deque] = {asset: deque(maxlen=60) for asset in assets}
         
-        # Manual trading mode
         self.trading_mode = CONFIG.get("trading_mode", "auto").lower()
         self.pending_proposals: List[TradeProposal] = []
         self.logger.info(f"Trading mode: {self.trading_mode.upper()}")
 
-        # File paths
         self.diary_path = Path("data/diary.jsonl")
         self.diary_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # ===== NEW: Rate limit tracking =====
+        self._last_hl_call = 0.0
+        self._hl_call_delay = 0.5  # Minimum delay between Hyperliquid API calls
+        self._consecutive_429s = 0
+        self._max_consecutive_429s = 5  # Skip iteration after this many 429s
+
+    async def _rate_limited_call(self, coro):
+        """
+        Execute a coroutine with rate limiting for Hyperliquid API.
+        Adds delay between calls and handles 429 errors gracefully.
+        """
+        import time
+        
+        # Ensure minimum delay between calls
+        now = time.time()
+        elapsed = now - self._last_hl_call
+        if elapsed < self._hl_call_delay:
+            await asyncio.sleep(self._hl_call_delay - elapsed)
+        
+        try:
+            result = await coro
+            self._last_hl_call = time.time()
+            self._consecutive_429s = 0  # Reset on success
+            return result
+        except Exception as e:
+            if '429' in str(e):
+                self._consecutive_429s += 1
+                # Exponential backoff
+                wait_time = min(30, 2 ** self._consecutive_429s)
+                self.logger.warning(f"⏳ Rate limited (429). Waiting {wait_time}s... (consecutive: {self._consecutive_429s})")
+                await asyncio.sleep(wait_time)
+            raise
 
     async def start(self):
         """Start the trading bot"""
@@ -133,19 +150,148 @@ class TradingBotEngine:
         self.start_time = datetime.now(UTC)
         self.invocation_count = 0
 
-        # Get initial account value
+        # ===== CRITICAL: STARTUP SYNC =====
+        # Must sync with exchange BEFORE any trading to detect existing positions
+        self.logger.info("🚀 STARTUP: Syncing with exchange...")
         try:
-            user_state = await self.hyperliquid.get_user_state()
-            self.initial_account_value = user_state.get('total_value', 0.0)
-            if self.initial_account_value == 0.0:
-                self.initial_account_value = user_state.get('balance', 10000.0)
+            startup_success = await self._startup_sync()
+            if not startup_success:
+                self.logger.error("❌ STARTUP SYNC FAILED - Bot will not trade until sync succeeds")
+                self.state.error = "Startup sync failed - waiting for exchange connection"
         except Exception as e:
-            self.logger.error(f"Failed to get initial account value: {e}")
-            self.initial_account_value = 10000.0
+            self.logger.error(f"❌ STARTUP SYNC ERROR: {e}")
+            self.state.error = f"Startup sync error: {e}"
 
         self._task = asyncio.create_task(self._main_loop())
         self.logger.info(f"Bot started - Assets: {self.assets}, Interval: {self.interval}")
         self._notify_state_update()
+
+    async def _startup_sync(self) -> bool:
+        """
+        CRITICAL: Sync with exchange on startup.
+        Detects existing positions and initializes active_trades tracking.
+        
+        Returns:
+            True if sync successful, False otherwise
+        """
+        max_retries = 3
+        
+        for attempt in range(max_retries):
+            try:
+                self.logger.info(f"🔄 STARTUP SYNC attempt {attempt + 1}/{max_retries}")
+                
+                # Get account state with retry
+                await asyncio.sleep(1)  # Initial delay to avoid burst
+                state = await self.hyperliquid.get_user_state()
+                
+                self.initial_account_value = state.get('total_value', 0.0)
+                if self.initial_account_value == 0.0:
+                    self.initial_account_value = state.get('balance', 10000.0)
+                
+                # Get open orders
+                await asyncio.sleep(0.5)
+                open_orders = await self.hyperliquid.get_open_orders()
+                
+                # ===== CRITICAL: Import existing positions into active_trades =====
+                existing_positions = []
+                for pos in state['positions']:
+                    asset = pos.get('coin')
+                    size = float(pos.get('szi', 0) or 0)
+                    
+                    if abs(size) > 0.00001:
+                        entry_price = float(pos.get('entryPx', 0) or 0)
+                        is_long = size > 0
+                        
+                        # Find associated TP/SL orders WITH PRICES
+                        tp_oid = None
+                        sl_oid = None
+                        tp_price = None
+                        sl_price = None
+                        
+                        for order in open_orders:
+                            if order.get('coin') == asset:
+                                order_type = order.get('orderType', {})
+                                if isinstance(order_type, dict) and 'trigger' in order_type:
+                                    trigger = order_type.get('trigger', {})
+                                    tpsl = trigger.get('tpsl')
+                                    trigger_px = trigger.get('triggerPx')
+                                    
+                                    if tpsl == 'tp':
+                                        tp_oid = order.get('oid')
+                                        tp_price = float(trigger_px) if trigger_px else None
+                                    elif tpsl == 'sl':
+                                        sl_oid = order.get('oid')
+                                        sl_price = float(trigger_px) if trigger_px else None
+                        
+                        trade_entry = {
+                            'asset': asset,
+                            'is_long': is_long,
+                            'amount': abs(size),
+                            'entry_price': entry_price,
+                            'tp_oid': tp_oid,
+                            'sl_oid': sl_oid,
+                            'tp_price': tp_price,  # NEW: Store the actual price
+                            'sl_price': sl_price,  # NEW: Store the actual price
+                            'exit_plan': 'Imported from existing position on startup',
+                            'opened_at': datetime.now(UTC).isoformat(),
+                            'imported_on_startup': True
+                        }
+                        
+                        self.active_trades.append(trade_entry)
+                        
+                        # Build detailed position info for logging
+                        tp_info = f"TP@${tp_price:,.2f}" if tp_price else "no TP"
+                        sl_info = f"SL@${sl_price:,.2f}" if sl_price else "no SL"
+                        existing_positions.append(f"{asset} {'LONG' if is_long else 'SHORT'} {abs(size):.6f}")
+                        
+                        self.logger.info(f"📥 IMPORTED: {asset} {'LONG' if is_long else 'SHORT'} {abs(size):.6f} @ ${entry_price:,.2f} | {tp_info} | {sl_info}")
+                
+                if existing_positions:
+                    self.logger.warning(f"⚠️ STARTUP: Found {len(existing_positions)} existing positions: {existing_positions}")
+                    self._write_diary_entry({
+                        'timestamp': datetime.now(UTC).isoformat(),
+                        'action': 'startup_import',
+                        'imported_positions': existing_positions,
+                        'note': 'Positions imported from exchange on bot startup'
+                    })
+                else:
+                    self.logger.info("✅ STARTUP: No existing positions found")
+                
+                # Clean up orphan orders (orders without positions)
+                await self._cleanup_orphan_orders(state['positions'], open_orders)
+                
+                self.logger.info(f"✅ STARTUP SYNC COMPLETE: Balance=${state['balance']:,.2f}, Positions={len(existing_positions)}")
+                return True
+                
+            except Exception as e:
+                self.logger.error(f"❌ STARTUP SYNC attempt {attempt + 1} failed: {e}")
+                if attempt < max_retries - 1:
+                    wait_time = 5 * (attempt + 1)
+                    self.logger.info(f"⏳ Waiting {wait_time}s before retry...")
+                    await asyncio.sleep(wait_time)
+        
+        return False
+
+    async def _cleanup_orphan_orders(self, positions: List[Dict], open_orders: List[Dict]):
+        """Cancel orders for assets that don't have positions (orphan TP/SL)"""
+        position_assets = {pos.get('coin') for pos in positions if abs(float(pos.get('szi', 0) or 0)) > 0.00001}
+        
+        orphan_count = 0
+        for order in open_orders:
+            asset = order.get('coin')
+            if asset and asset not in position_assets:
+                try:
+                    oid = order.get('oid')
+                    if oid:
+                        await asyncio.sleep(0.3)  # Rate limit protection
+                        await self.hyperliquid.cancel_order(asset, oid)
+                        orphan_count += 1
+                        self.logger.info(f"🧹 Cancelled orphan order: {asset} oid={oid}")
+                except Exception as e:
+                    self.logger.error(f"Failed to cancel orphan order: {e}")
+        
+        if orphan_count > 0:
+            self.logger.info(f"🧹 Cleaned up {orphan_count} orphan orders")
 
     async def stop(self):
         """Stop the trading bot"""
@@ -165,36 +311,85 @@ class TradingBotEngine:
         self.logger.info("Bot stopped")
         self._notify_state_update()
 
-    # ==================== IMPROVED: STATE SYNC METHODS ====================
-    
-    async def _sync_exchange_state(self) -> Dict[str, Any]:
+    # ===== NEW: TP/SL VALIDATION =====
+    def _validate_tp_sl(self, action: str, current_price: float, tp_price: Optional[float], sl_price: Optional[float]) -> Dict[str, Any]:
         """
-        Sync with exchange to get fresh position state.
-        Called before LLM decision to ensure we have current data.
+        Validate and optionally fix TP/SL prices.
         
-        IMPROVED: Now also cleans up orphan orders.
+        Rules:
+        - BUY (LONG): TP > current_price, SL < current_price
+        - SELL (SHORT): TP < current_price, SL > current_price
         
         Returns:
-            Dict with 'positions', 'open_orders', 'balance', 'total_value'
+            Dict with 'tp_price', 'sl_price', 'warnings' list
+        """
+        warnings = []
+        validated_tp = tp_price
+        validated_sl = sl_price
+        
+        if action == 'buy':
+            # LONG position
+            if tp_price is not None and tp_price <= current_price:
+                warnings.append(f"TP {tp_price} <= entry {current_price} for LONG - INVALID, setting to None")
+                validated_tp = None
+            
+            if sl_price is not None and sl_price >= current_price:
+                warnings.append(f"SL {sl_price} >= entry {current_price} for LONG - INVALID, setting to None")
+                validated_sl = None
+                
+            # Sanity check: TP shouldn't be too far (>50% gain)
+            if validated_tp and validated_tp > current_price * 1.5:
+                warnings.append(f"TP {validated_tp} is >50% above entry - unusually high")
+                
+            # Sanity check: SL shouldn't be too far (>30% loss)
+            if validated_sl and validated_sl < current_price * 0.7:
+                warnings.append(f"SL {validated_sl} is >30% below entry - consider tighter stop")
+                
+        elif action == 'sell':
+            # SHORT position
+            if tp_price is not None and tp_price >= current_price:
+                warnings.append(f"TP {tp_price} >= entry {current_price} for SHORT - INVALID, setting to None")
+                validated_tp = None
+            
+            if sl_price is not None and sl_price <= current_price:
+                warnings.append(f"SL {sl_price} <= entry {current_price} for SHORT - INVALID, setting to None")
+                validated_sl = None
+                
+            # Sanity check: TP shouldn't be too far (>50% gain)
+            if validated_tp and validated_tp < current_price * 0.5:
+                warnings.append(f"TP {validated_tp} is >50% below entry - unusually low")
+                
+            # Sanity check: SL shouldn't be too far (>30% loss)
+            if validated_sl and validated_sl > current_price * 1.3:
+                warnings.append(f"SL {validated_sl} is >30% above entry - consider tighter stop")
+        
+        return {
+            'tp_price': validated_tp,
+            'sl_price': validated_sl,
+            'warnings': warnings
+        }
+
+    async def _sync_exchange_state(self) -> Optional[Dict[str, Any]]:
+        """
+        Sync with exchange to get fresh position state.
+        
+        IMPROVED v3: Returns None on failure instead of raising.
+        Caller should handle None appropriately (skip trading).
         """
         self.logger.info("🔄 PRE-DECISION SYNC: Fetching fresh exchange state...")
         
         try:
-            # Fetch fresh state from Hyperliquid
+            await asyncio.sleep(0.5)  # Rate limit protection
             state = await self.hyperliquid.get_user_state()
+            
+            await asyncio.sleep(0.3)
             open_orders_raw = await self.hyperliquid.get_open_orders()
             
-            # Get set of assets with actual positions
-            position_assets = {pos.get('coin') for pos in state['positions']}
+            position_assets = {pos.get('coin') for pos in state['positions'] 
+                            if abs(float(pos.get('szi', 0) or 0)) > 0.00001}
             
-            # ===== NEW: CANCEL ORPHAN ORDERS =====
-            # Orders for assets without positions are orphans (TP/SL that got left behind)
-            orphan_orders = []
-            for order in open_orders_raw:
-                order_asset = order.get('coin')
-                if order_asset and order_asset not in position_assets:
-                    orphan_orders.append(order)
-            
+            # Clean orphan orders
+            orphan_orders = [o for o in open_orders_raw if o.get('coin') not in position_assets]
             if orphan_orders:
                 self.logger.warning(f"🧹 Found {len(orphan_orders)} orphan orders to cancel")
                 for order in orphan_orders:
@@ -202,32 +397,29 @@ class TradingBotEngine:
                         oid = order.get('oid')
                         asset = order.get('coin')
                         if oid and asset:
+                            await asyncio.sleep(0.3)
                             await self.hyperliquid.cancel_order(asset, oid)
                             self.logger.info(f"🧹 Cancelled orphan order: {asset} oid={oid}")
                     except Exception as e:
                         self.logger.error(f"Failed to cancel orphan order: {e}")
                 
-                # Re-fetch orders after cleanup
+                await asyncio.sleep(0.5)
                 open_orders_raw = await self.hyperliquid.get_open_orders()
-                
-                # Write to diary
-                self._write_diary_entry({
-                    'timestamp': datetime.now(UTC).isoformat(),
-                    'action': 'cleanup_orphan_orders',
-                    'cancelled_count': len(orphan_orders),
-                    'assets': list(set(o.get('coin') for o in orphan_orders))
-                })
-            # ===== END NEW =====
             
-            # Enrich positions with current prices
+            # Enrich positions
             enriched_positions = []
             for pos in state['positions']:
                 symbol = pos.get('coin')
+                size = float(pos.get('szi', 0) or 0)
+                if abs(size) < 0.00001:
+                    continue
+                    
                 try:
+                    await asyncio.sleep(0.2)
                     current_price = await self.hyperliquid.get_current_price(symbol)
                     enriched_positions.append({
                         'symbol': symbol,
-                        'quantity': float(pos.get('szi', 0) or 0),
+                        'quantity': size,
                         'entry_price': float(pos.get('entryPx', 0) or 0),
                         'current_price': current_price,
                         'liquidation_price': float(pos.get('liquidationPx', 0) or 0),
@@ -261,6 +453,7 @@ class TradingBotEngine:
                 })
             
             self.logger.info(f"🔄 SYNC COMPLETE: {len(enriched_positions)} positions, {len(open_orders)} orders")
+            self._consecutive_429s = 0  # Reset on success
             
             return {
                 'positions': enriched_positions,
@@ -272,25 +465,23 @@ class TradingBotEngine:
             }
             
         except Exception as e:
-            self.logger.error(f"❌ SYNC FAILED: {e}")
-            raise
+            error_str = str(e)
+            if '429' in error_str:
+                self._consecutive_429s += 1
+                self.logger.error(f"❌ SYNC RATE LIMITED (429): {self._consecutive_429s} consecutive failures")
+            else:
+                self.logger.error(f"❌ SYNC FAILED: {e}")
+            return None  # Return None instead of raising
 
     async def _get_real_position(self, asset: str) -> Optional[Dict]:
-        """
-        Get the REAL current position for an asset from the exchange.
-        
-        NEW METHOD: Used to verify state before executing trades.
-        
-        Returns:
-            Position dict with 'side' ('long'/'short'/None), 'size', 'entry_price'
-            or None if no position exists
-        """
+        """Get the REAL current position for an asset from the exchange."""
         try:
+            await asyncio.sleep(0.3)
             state = await self.hyperliquid.get_user_state()
             for pos in state['positions']:
                 if pos.get('coin') == asset:
                     size = float(pos.get('szi', 0) or 0)
-                    if abs(size) > 0.00001:  # Has meaningful position
+                    if abs(size) > 0.00001:
                         return {
                             'side': 'long' if size > 0 else 'short',
                             'size': abs(size),
@@ -302,16 +493,7 @@ class TradingBotEngine:
             return None
 
     async def _reconcile_pre_decision(self, positions_raw: List[Dict], open_orders_raw: List[Dict]) -> List[str]:
-        """
-        Reconcile active trades with fresh exchange state BEFORE making LLM decision.
-        This catches any SL/TP triggers that occurred during indicator fetching.
-        
-        IMPROVED: Also updates active_trades with correct position data.
-        
-        Returns:
-            List of assets that were removed (closed by exchange)
-        """
-        # Build map of real positions
+        """Reconcile active trades with fresh exchange state BEFORE making LLM decision."""
         real_positions = {}
         for pos in positions_raw:
             asset = pos.get('coin')
@@ -330,27 +512,67 @@ class TradingBotEngine:
             asset = trade['asset']
             
             if asset not in real_positions:
-                # Position no longer exists - was closed by TP/SL
                 self.active_trades.remove(trade)
                 removed.append(asset)
             else:
-                # Position exists - verify it matches what we think
                 real = real_positions[asset]
                 expected_side = 'long' if trade.get('is_long') else 'short'
                 
                 if real['side'] != expected_side:
-                    # Side mismatch! Position was flipped somehow
                     self.logger.error(f"⚠️ SIDE MISMATCH {asset}: expected {expected_side}, got {real['side']}")
-                    # Update our tracking to match reality
                     trade['is_long'] = (real['side'] == 'long')
                     trade['amount'] = real['size']
                     trade['entry_price'] = real['entry_price']
                     updated.append(asset)
                 elif abs(trade.get('amount', 0) - real['size']) > 0.0001:
-                    # Size mismatch - partial fill or modification
                     self.logger.warning(f"⚠️ SIZE MISMATCH {asset}: tracked {trade.get('amount')}, actual {real['size']}")
                     trade['amount'] = real['size']
                     updated.append(asset)
+
+        # ===== NEW: Add positions that exist on exchange but not tracked =====
+        for asset, real in real_positions.items():
+            tracked = next((t for t in self.active_trades if t['asset'] == asset), None)
+            if not tracked:
+                # Position exists on exchange but we're not tracking it!
+                # Try to find associated TP/SL orders
+                tp_oid = None
+                sl_oid = None
+                tp_price = None
+                sl_price = None
+                
+                for order in open_orders_raw:
+                    if order.get('coin') == asset:
+                        order_type = order.get('orderType', {})
+                        if isinstance(order_type, dict) and 'trigger' in order_type:
+                            trigger = order_type.get('trigger', {})
+                            tpsl = trigger.get('tpsl')
+                            trigger_px = trigger.get('triggerPx')
+                            
+                            if tpsl == 'tp':
+                                tp_oid = order.get('oid')
+                                tp_price = float(trigger_px) if trigger_px else None
+                            elif tpsl == 'sl':
+                                sl_oid = order.get('oid')
+                                sl_price = float(trigger_px) if trigger_px else None
+                
+                tp_info = f"TP@${tp_price:,.2f}" if tp_price else "no TP"
+                sl_info = f"SL@${sl_price:,.2f}" if sl_price else "no SL"
+                
+                self.logger.warning(f"⚠️ UNTRACKED POSITION FOUND: {asset} {real['side']} {real['size']} | {tp_info} | {sl_info}")
+                self.active_trades.append({
+                    'asset': asset,
+                    'is_long': (real['side'] == 'long'),
+                    'amount': real['size'],
+                    'entry_price': real['entry_price'],
+                    'tp_oid': tp_oid,
+                    'sl_oid': sl_oid,
+                    'tp_price': tp_price,
+                    'sl_price': sl_price,
+                    'exit_plan': 'Discovered untracked position during reconciliation',
+                    'opened_at': datetime.now(UTC).isoformat(),
+                    'discovered_untracked': True
+                })
+                updated.append(asset)
 
         if removed:
             self.logger.warning(f"⚠️ PRE-DECISION RECONCILE: Positions closed by exchange: {removed}")
@@ -368,27 +590,10 @@ class TradingBotEngine:
 
     async def _verify_position_before_trade(self, asset: str, intended_action: str) -> Dict[str, Any]:
         """
-        NEW METHOD: Verify position state BEFORE executing a trade.
-        
-        This prevents the bug where:
-        1. We think we have a SHORT
-        2. TP closed it during our decision cycle
-        3. We execute BUY to "close" the short
-        4. Actually opens a new LONG position
-        
-        Args:
-            asset: Asset to check
-            intended_action: 'buy' or 'sell'
-            
-        Returns:
-            Dict with:
-            - 'should_execute': bool - whether to proceed with the trade
-            - 'current_position': position info or None
-            - 'warning': optional warning message
+        IMPROVED v3: Verify position state BEFORE executing a trade.
+        Now also checks for UNTRACKED existing positions.
         """
         real_pos = await self._get_real_position(asset)
-        
-        # Find our tracked trade for this asset
         tracked = next((t for t in self.active_trades if t['asset'] == asset), None)
         
         result = {
@@ -398,13 +603,39 @@ class TradingBotEngine:
             'adjust_size': None
         }
         
-        if tracked and not real_pos:
-            # We think we have a position, but we don't!
-            # This means TP/SL closed it
-            result['warning'] = f"Position was closed by TP/SL. Skipping {intended_action}."
+        # ===== NEW: Check for untracked existing position =====
+        if not tracked and real_pos:
+            # We're NOT tracking this asset but exchange has a position!
+            result['warning'] = f"UNTRACKED position exists: {real_pos['side']} {real_pos['size']}. Adding to tracking instead of executing."
             result['should_execute'] = False
             
-            # Clean up our tracking
+            # Add to tracking
+            self.active_trades.append({
+                'asset': asset,
+                'is_long': (real_pos['side'] == 'long'),
+                'amount': real_pos['size'],
+                'entry_price': real_pos['entry_price'],
+                'tp_oid': None,
+                'sl_oid': None,
+                'exit_plan': 'Discovered during pre-trade verification',
+                'opened_at': datetime.now(UTC).isoformat(),
+                'discovered_untracked': True
+            })
+            
+            self._write_diary_entry({
+                'timestamp': datetime.now(UTC).isoformat(),
+                'action': 'discovered_untracked_position',
+                'asset': asset,
+                'position': real_pos,
+                'intended_action': intended_action,
+                'note': 'Blocked trade due to untracked existing position'
+            })
+            
+            return result
+        
+        if tracked and not real_pos:
+            result['warning'] = f"Position was closed by TP/SL. Skipping {intended_action}."
+            result['should_execute'] = False
             self.active_trades = [t for t in self.active_trades if t['asset'] != asset]
             
             self._write_diary_entry({
@@ -416,37 +647,23 @@ class TradingBotEngine:
             })
             
         elif tracked and real_pos:
-            # We have both tracked and real position - verify they match
             tracked_side = 'long' if tracked.get('is_long') else 'short'
             
             if tracked_side != real_pos['side']:
-                # Side mismatch - something is very wrong
                 result['warning'] = f"Side mismatch: tracked {tracked_side}, actual {real_pos['side']}"
                 result['should_execute'] = False
-                
                 self.logger.error(f"❌ CRITICAL: {asset} side mismatch - aborting trade")
                 
             elif abs(tracked.get('amount', 0) - real_pos['size']) > 0.0001:
-                # Size mismatch - adjust trade size
                 result['adjust_size'] = real_pos['size']
                 result['warning'] = f"Size adjusted from {tracked.get('amount')} to {real_pos['size']}"
         
         return result
 
     async def _verify_post_trade(self, asset: str, expected_side: str, expected_size: float) -> bool:
-        """
-        Verify trade execution after placing orders.
-        
-        Args:
-            asset: Asset that was traded
-            expected_side: 'long' or 'short'
-            expected_size: Expected position size
-            
-        Returns:
-            True if position matches expected, False otherwise
-        """
+        """Verify trade execution after placing orders."""
         try:
-            await asyncio.sleep(1)  # Wait for exchange to process
+            await asyncio.sleep(1)
             state = await self.hyperliquid.get_user_state()
             
             for pos in state['positions']:
@@ -464,7 +681,6 @@ class TradingBotEngine:
                         self.logger.warning(f"⚠️ POST-TRADE VERIFY: {asset} mismatch - expected {expected_side} {expected_size}, got {actual_side} {abs(actual_size)}")
                         return False
             
-            # No position found - might be closed already or never opened
             self.logger.warning(f"⚠️ POST-TRADE VERIFY: No position found for {asset}")
             return False
             
@@ -472,30 +688,27 @@ class TradingBotEngine:
             self.logger.error(f"❌ POST-TRADE VERIFY failed: {e}")
             return False
 
-    # ==================== END IMPROVED METHODS ====================
-
     async def _main_loop(self):
-        """
-        Main trading loop.
-        Adapted from ai-trading-agent/src/main.py lines 88-455
-        
-        PATCHED v2: 
-        - Pre-trade position verification
-        - Orphan order cleanup
-        - Better state reconciliation
-        """
+        """Main trading loop - PATCHED v3"""
         try:
             while self.is_running:
                 self.invocation_count += 1
                 self.state.invocation_count = self.invocation_count
 
                 try:
+                    # ===== CHECK FOR TOO MANY RATE LIMIT ERRORS =====
+                    if self._consecutive_429s >= self._max_consecutive_429s:
+                        self.logger.warning(f"⏸️ Too many rate limit errors ({self._consecutive_429s}). Waiting 60s before retry...")
+                        await asyncio.sleep(60)
+                        self._consecutive_429s = 0
+                        continue
+
                     # ===== PHASE 1: Fetch Account State =====
+                    await asyncio.sleep(0.5)
                     state = await self.hyperliquid.get_user_state()
                     balance = state['balance']
                     total_value = state['total_value']
 
-                    # Calculate total return
                     initial_balance = self.initial_account_value or total_value
                     if initial_balance > 0:
                         total_return_pct = ((total_value - initial_balance) / initial_balance) * 100
@@ -506,7 +719,6 @@ class TradingBotEngine:
                     
                     self.logger.debug(f"  Balance: ${balance:,.2f} | Return: {total_return_pct:+.2f}% | Sharpe: {sharpe_ratio:.2f}")
 
-                    # Update bot state
                     self.state.balance = balance
                     self.state.total_value = total_value
                     self.state.total_return_pct = total_return_pct
@@ -516,11 +728,15 @@ class TradingBotEngine:
                     enriched_positions = []
                     for pos in state['positions']:
                         symbol = pos.get('coin')
+                        size = float(pos.get('szi', 0) or 0)
+                        if abs(size) < 0.00001:
+                            continue
                         try:
+                            await asyncio.sleep(0.2)
                             current_price = await self.hyperliquid.get_current_price(symbol)
                             enriched_positions.append({
                                 'symbol': symbol,
-                                'quantity': float(pos.get('szi', 0) or 0),
+                                'quantity': size,
                                 'entry_price': float(pos.get('entryPx', 0) or 0),
                                 'current_price': current_price,
                                 'liquidation_price': float(pos.get('liquidationPx', 0) or 0),
@@ -536,6 +752,7 @@ class TradingBotEngine:
                     recent_diary = self._load_recent_diary(limit=10)
 
                     # ===== PHASE 4: Fetch Open Orders =====
+                    await asyncio.sleep(0.3)
                     open_orders_raw = await self.hyperliquid.get_open_orders()
                     open_orders = []
                     for o in open_orders_raw:
@@ -561,10 +778,11 @@ class TradingBotEngine:
 
                     self.state.open_orders = open_orders
 
-                    # ===== PHASE 5: Reconcile Active Trades (START OF CYCLE) =====
+                    # ===== PHASE 5: Reconcile Active Trades =====
                     await self._reconcile_active_trades(state['positions'], open_orders_raw)
 
                     # ===== PHASE 6: Fetch Recent Fills =====
+                    await asyncio.sleep(0.3)
                     fills_raw = await self.hyperliquid.get_recent_fills(limit=50)
                     recent_fills = []
                     for fill in fills_raw[-20:]:
@@ -596,38 +814,35 @@ class TradingBotEngine:
                         'recent_fills': recent_fills
                     }
 
-                    # ===== PHASE 8: Gather Market Data (SLOW - 30-60s) =====
+                    # ===== PHASE 8: Gather Market Data =====
                     market_sections = []
                     for idx, asset in enumerate(self.assets):
                         try:
-                            # Current price
+                            await asyncio.sleep(0.3)
                             current_price = await self.hyperliquid.get_current_price(asset)
 
-                            # Store price history
                             self.price_history[asset].append({
                                 't': datetime.now(UTC).isoformat(),
                                 'mid': current_price
                             })
 
-                            # Open interest and funding
+                            await asyncio.sleep(0.2)
                             oi = await self.hyperliquid.get_open_interest(asset)
+                            
+                            await asyncio.sleep(0.2)
                             funding = await self.hyperliquid.get_funding_rate(asset)
 
-                            # Fetch all indicators using bulk endpoint (2 requests instead of 10)
                             indicators = self.taapi.fetch_asset_indicators(asset)
                             
-                            # Add delay between assets to respect TAAPI rate limit (1 req/15s)
                             if idx < len(self.assets) - 1:
                                 self.logger.info(f"Waiting 15s before fetching next asset (TAAPI rate limit)...")
                                 await asyncio.sleep(15)
                             
-                            # Extract 5m indicators
                             ema20_5m_series = indicators["5m"].get("ema20", [])
                             macd_5m_series = indicators["5m"].get("macd", [])
                             rsi7_5m_series = indicators["5m"].get("rsi7", [])
                             rsi14_5m_series = indicators["5m"].get("rsi14", [])
 
-                            # Extract long-term indicators
                             interval = CONFIG.get("interval", "1h")
                             lt_indicators = indicators.get(interval, {})
                             lt_ema20 = lt_indicators.get("ema20")
@@ -637,7 +852,6 @@ class TradingBotEngine:
                             lt_macd_series = lt_indicators.get("macd", [])
                             lt_rsi_series = lt_indicators.get("rsi14", [])
 
-                            # Build market data structure
                             market_sections.append({
                                 "asset": asset,
                                 "current_price": current_price,
@@ -670,47 +884,43 @@ class TradingBotEngine:
                         except Exception as e:
                             self.logger.error(f"Error gathering market data for {asset}: {e}")
 
-                    # ===== PHASE 8.5: PRE-DECISION SYNC (IMPROVED!) =====
-                    # This is critical - we sync with exchange AFTER gathering indicators
-                    # to catch any SL/TP triggers that occurred during the slow TAAPI calls
-                    try:
-                        sync_state = await self._sync_exchange_state()
-                        
-                        # Update dashboard with FRESH position data
-                        dashboard['positions'] = sync_state['positions']
-                        dashboard['account_value'] = sync_state['total_value']
-                        dashboard['balance'] = sync_state['balance']
-                        
-                        # Update open orders with fresh data
-                        dashboard['open_orders'] = sync_state['open_orders']
-                        
-                        # Reconcile - this will catch any positions closed by SL/TP
-                        closed_by_exchange = await self._reconcile_pre_decision(
-                            sync_state['positions_raw'], 
-                            sync_state['open_orders_raw']
-                        )
-                        
-                        # Update active_trades in dashboard
-                        dashboard['active_trades'] = self.active_trades
-                        
-                        # Update market prices in market_sections with fresh data
-                        for section in market_sections:
-                            asset = section['asset']
-                            # Find fresh position data
-                            for pos in sync_state['positions']:
-                                if pos['symbol'] == asset:
-                                    section['current_price'] = pos['current_price']
-                                    break
-                        
-                        # Update bot state with fresh data
-                        self.state.positions = sync_state['positions']
-                        self.state.balance = sync_state['balance']
-                        self.state.total_value = sync_state['total_value']
-                        self.state.open_orders = sync_state['open_orders']
-                        
-                    except Exception as e:
-                        self.logger.error(f"Pre-decision sync failed: {e} - continuing with stale data")
-                        # Continue anyway - better to trade with slightly stale data than not at all
+                    # ===== PHASE 8.5: PRE-DECISION SYNC =====
+                    # CRITICAL: If sync fails, SKIP trading this iteration
+                    sync_state = await self._sync_exchange_state()
+                    
+                    if sync_state is None:
+                        self.logger.error("❌ PRE-DECISION SYNC FAILED - SKIPPING TRADING THIS ITERATION")
+                        self.state.error = "Exchange sync failed - skipping trades"
+                        self._notify_state_update()
+                        await asyncio.sleep(self._get_interval_seconds())
+                        continue
+                    
+                    # Update with fresh data
+                    dashboard['positions'] = sync_state['positions']
+                    dashboard['account_value'] = sync_state['total_value']
+                    dashboard['balance'] = sync_state['balance']
+                    dashboard['open_orders'] = sync_state['open_orders']
+                    
+                    # Reconcile
+                    closed_by_exchange = await self._reconcile_pre_decision(
+                        sync_state['positions_raw'], 
+                        sync_state['open_orders_raw']
+                    )
+                    
+                    dashboard['active_trades'] = self.active_trades
+                    
+                    for section in market_sections:
+                        asset = section['asset']
+                        for pos in sync_state['positions']:
+                            if pos['symbol'] == asset:
+                                section['current_price'] = pos['current_price']
+                                break
+                    
+                    self.state.positions = sync_state['positions']
+                    self.state.balance = sync_state['balance']
+                    self.state.total_value = sync_state['total_value']
+                    self.state.open_orders = sync_state['open_orders']
+                    self.state.error = None  # Clear error on successful sync
 
                     # ===== PHASE 8.7: Enhanced Analysis =====
                     self.logger.info("Building enhanced market analysis...")
@@ -719,14 +929,13 @@ class TradingBotEngine:
                         current_price = section["current_price"]
                         
                         try:
-                            # Fetch OHLCV candles
+                            await asyncio.sleep(0.3)
                             ohlcv_data = await self.hyperliquid.get_candles(
                                 asset=asset, 
                                 interval=self.interval,
                                 limit=30
                             )
                             
-                            # Build daily OHLC for pivots
                             if ohlcv_data and len(ohlcv_data) >= 6:
                                 recent = ohlcv_data[-6:]
                                 daily_ohlc = {
@@ -741,7 +950,6 @@ class TradingBotEngine:
                                     "close": current_price
                                 }
                             
-                            # Build enhanced context
                             enhanced = self.enhanced_context.build_context(
                                 asset=asset,
                                 current_price=current_price,
@@ -750,7 +958,6 @@ class TradingBotEngine:
                                 timeframe=self.interval
                             )
                             
-                            # Add to market section
                             section["enhanced_analysis"] = enhanced["prompt_text"]
                             section["composite_signal"] = enhanced["composite_signal"]
                             section["composite_confidence"] = enhanced["confidence"]
@@ -765,9 +972,7 @@ class TradingBotEngine:
                             section["enhanced_analysis"] = "Enhanced analysis unavailable"
                             section["composite_signal"] = "NEUTRAL"
                             section["composite_confidence"] = 50
-                    
-                    
-                    
+
                     # ===== PHASE 9: Build LLM Context =====
                     context_payload = OrderedDict([
                         ("invocation", {
@@ -783,7 +988,6 @@ class TradingBotEngine:
                     ])
                     context = json.dumps(context_payload, default=json_default, indent=2)
 
-                    # Log prompt
                     with open("data/prompts.log", "a", encoding="utf-8") as f:
                         f.write(f"\n{'='*80}\n")
                         f.write(f"Invocation {self.invocation_count} - {datetime.now(UTC).isoformat()}\n")
@@ -795,7 +999,6 @@ class TradingBotEngine:
                         self.agent.decide_trade, self.assets, context
                     )
 
-                    # Validate and retry if needed
                     if not isinstance(decisions, dict) or 'trade_decisions' not in decisions:
                         self.logger.warning("Invalid decision format, retrying with strict prefix...")
                         strict_context = (
@@ -806,7 +1009,6 @@ class TradingBotEngine:
                             self.agent.decide_trade, self.assets, strict_context
                         )
 
-                    # Check for all-hold with parse errors
                     trade_decisions = decisions.get('trade_decisions', [])
                     if all(
                         d.get('action') == 'hold' and 'parse error' in d.get('rationale', '').lower()
@@ -818,14 +1020,13 @@ class TradingBotEngine:
                         )
                         trade_decisions = decisions.get('trade_decisions', [])
 
-                    # Extract reasoning
                     reasoning = decisions.get('reasoning', '')
                     if reasoning:
                         self.logger.info(f"LLM Reasoning: {reasoning[:200]}...")
 
                     self.state.last_reasoning = decisions
 
-                    # ===== PHASE 11: Execute Trades or Create Proposals =====
+                    # ===== PHASE 11: Execute Trades =====
                     for decision in trade_decisions:
                         asset = decision.get('asset')
                         if asset not in self.assets:
@@ -833,7 +1034,6 @@ class TradingBotEngine:
 
                         action = decision.get('action')
                         rationale = decision.get('rationale', '')
-                        # Fallback: if rationale is empty, use exit_plan or extract from reasoning
                         if not rationale:
                             rationale = decision.get('exit_plan', '') or (reasoning[:200] if reasoning else '')
                         allocation = float(decision.get('allocation_usd') or 0)
@@ -843,17 +1043,22 @@ class TradingBotEngine:
                         confidence = decision.get('confidence', 75.0)
 
                         if action in ['buy', 'sell']:
-                            # MANUAL MODE: Create proposal instead of executing
+                            # MANUAL MODE
                             if self.trading_mode == "manual":
                                 try:
+                                    await asyncio.sleep(0.2)
                                     current_price = await self.hyperliquid.get_current_price(asset)
                                     size = allocation / current_price if current_price > 0 else 0
                                     
-                                    # Calculate risk/reward
+                                    # Validate TP/SL
+                                    validation = self._validate_tp_sl(action, current_price, tp_price, sl_price)
+                                    for warning in validation['warnings']:
+                                        self.logger.warning(f"⚠️ TP/SL VALIDATION: {warning}")
+                                    
                                     risk_reward = None
-                                    if tp_price and sl_price and current_price:
-                                        potential_gain = abs(tp_price - current_price) / current_price
-                                        potential_loss = abs(sl_price - current_price) / current_price
+                                    if validation['tp_price'] and validation['sl_price'] and current_price:
+                                        potential_gain = abs(validation['tp_price'] - current_price) / current_price
+                                        potential_loss = abs(validation['sl_price'] - current_price) / current_price
                                         if potential_loss > 0:
                                             risk_reward = potential_gain / potential_loss
                                     
@@ -863,31 +1068,31 @@ class TradingBotEngine:
                                         confidence=confidence,
                                         risk_reward=risk_reward,
                                         entry_price=current_price,
-                                        tp_price=tp_price,
-                                        sl_price=sl_price,
+                                        tp_price=validation['tp_price'],
+                                        sl_price=validation['sl_price'],
                                         size=size,
                                         allocation=allocation,
                                         rationale=rationale,
                                         market_conditions={
                                             'current_price': current_price,
-                                            'exit_plan': exit_plan
+                                            'exit_plan': exit_plan,
+                                            'tp_sl_warnings': validation['warnings']
                                         }
                                     )
                                     
                                     self.pending_proposals.append(proposal)
                                     self.logger.info(f"[PROPOSAL] Created: {action.upper()} {asset} @ ${current_price:,.2f} (ID: {proposal.id[:8]})")
                                     
-                                    # Update state with proposals
                                     self.state.pending_proposals = [p.to_dict() for p in self.pending_proposals if p.is_pending]
                                     
                                 except Exception as e:
                                     self.logger.error(f"Error creating proposal for {asset}: {e}")
                                     
-                                continue  # Skip execution in manual mode
-                            
-                            # AUTO MODE: Execute immediately (original behavior)
+                                continue
+
+                            # AUTO MODE
                             try:
-                                # ===== NEW: PRE-TRADE POSITION VERIFICATION =====
+                                # PRE-TRADE VERIFICATION
                                 pre_check = await self._verify_position_before_trade(asset, action)
                                 
                                 if not pre_check['should_execute']:
@@ -897,25 +1102,26 @@ class TradingBotEngine:
                                 if pre_check['warning']:
                                     self.logger.warning(f"⚠️ {pre_check['warning']}")
                                 
-                                # Adjust size if needed
-                                if pre_check.get('adjust_size'):
-                                    self.logger.info(f"📐 Adjusting trade size for {asset} to {pre_check['adjust_size']}")
-                                # ===== END NEW =====
-                                
+                                await asyncio.sleep(0.3)
                                 current_price = await self.hyperliquid.get_current_price(asset)
                                 amount = allocation / current_price if current_price > 0 else 0
                                 
-                                # Use adjusted size if available
                                 if pre_check.get('adjust_size') and pre_check['current_position']:
-                                    # If closing a position, use the actual position size
                                     real_pos = pre_check['current_position']
                                     if (action == 'buy' and real_pos['side'] == 'short') or \
                                        (action == 'sell' and real_pos['side'] == 'long'):
                                         amount = real_pos['size']
                                         self.logger.info(f"📐 Using actual position size for close: {amount}")
 
+                                # ===== VALIDATE TP/SL =====
+                                validation = self._validate_tp_sl(action, current_price, tp_price, sl_price)
+                                for warning in validation['warnings']:
+                                    self.logger.warning(f"⚠️ TP/SL VALIDATION: {warning}")
+                                tp_price = validation['tp_price']
+                                sl_price = validation['sl_price']
+
                                 if amount > 0:
-                                    # Place market order
+                                    await asyncio.sleep(0.3)
                                     if action == 'buy':
                                         order_result = await self.hyperliquid.place_buy_order(asset, amount)
                                     else:
@@ -923,14 +1129,12 @@ class TradingBotEngine:
 
                                     self.logger.info(f"Executed {action} {asset}: {amount:.6f} @ {current_price}")
 
-                                    # ===== POST-TRADE VERIFICATION =====
+                                    # POST-TRADE VERIFICATION
                                     expected_side = 'long' if action == 'buy' else 'short'
                                     verified = await self._verify_post_trade(asset, expected_side, amount)
                                     
                                     if not verified:
-                                        # Trade might have failed or resulted in unexpected state
                                         self.logger.warning(f"⚠️ Trade verification failed for {asset} - checking state")
-                                        # Re-sync to get accurate state
                                         real_pos = await self._get_real_position(asset)
                                         if real_pos:
                                             amount = real_pos['size']
@@ -939,7 +1143,6 @@ class TradingBotEngine:
                                             self.logger.error(f"❌ No position found after trade for {asset}")
                                             continue
 
-                                    # Wait and check fills
                                     await asyncio.sleep(1)
                                     recent_fills_check = await self.hyperliquid.get_recent_fills(limit=5)
                                     filled = any(
@@ -948,26 +1151,26 @@ class TradingBotEngine:
                                         for f in recent_fills_check
                                     )
 
-                                    # ===== CANCEL EXISTING ORDERS BEFORE PLACING NEW TP/SL =====
-                                    # This prevents orphan orders from accumulating
+                                    # CANCEL EXISTING ORDERS
                                     try:
                                         existing_orders = await self.hyperliquid.get_open_orders()
                                         for order in existing_orders:
                                             if order.get('coin') == asset:
                                                 oid = order.get('oid')
                                                 if oid:
+                                                    await asyncio.sleep(0.3)
                                                     await self.hyperliquid.cancel_order(asset, oid)
                                                     self.logger.info(f"🧹 Cancelled existing order for {asset} before placing new TP/SL")
                                     except Exception as e:
                                         self.logger.warning(f"Failed to cancel existing orders: {e}")
 
-                                    # Place TP/SL orders
                                     tp_oid = None
                                     sl_oid = None
 
                                     if tp_price:
                                         try:
                                             is_buy = (action == 'buy')
+                                            await asyncio.sleep(0.3)
                                             tp_order = await self.hyperliquid.place_take_profit(
                                                 asset, is_buy, amount, tp_price
                                             )
@@ -980,6 +1183,7 @@ class TradingBotEngine:
                                     if sl_price:
                                         try:
                                             is_buy = (action == 'buy')
+                                            await asyncio.sleep(0.3)
                                             sl_order = await self.hyperliquid.place_stop_loss(
                                                 asset, is_buy, amount, sl_price
                                             )
@@ -989,7 +1193,6 @@ class TradingBotEngine:
                                         except Exception as e:
                                             self.logger.error(f"Failed to place SL: {e}")
 
-                                    # Update active trades
                                     self.active_trades = [
                                         t for t in self.active_trades if t['asset'] != asset
                                     ]
@@ -1004,14 +1207,13 @@ class TradingBotEngine:
                                         'opened_at': datetime.now(UTC).isoformat()
                                     })
 
-                                    # Write to diary
                                     self._write_diary_entry({
                                         'timestamp': datetime.now(UTC).isoformat(),
                                         'asset': asset,
                                         'action': action,
                                         'allocation_usd': allocation,
                                         'amount': amount,
-                                        'size': amount,  # Alias for UI compatibility (history.py reads 'size')
+                                        'size': amount,
                                         'entry_price': current_price,
                                         'tp_price': tp_price,
                                         'tp_oid': tp_oid,
@@ -1024,18 +1226,22 @@ class TradingBotEngine:
                                         'filled': filled
                                     })
                                     
-                                    # ===== POST-TRADE STATE SYNC =====
-                                    # Sync positions immediately after trade execution to update UI
+                                    # POST-TRADE SYNC
                                     try:
+                                        await asyncio.sleep(0.5)
                                         post_trade_state = await self.hyperliquid.get_user_state()
                                         post_positions = []
                                         for pos in post_trade_state['positions']:
                                             symbol = pos.get('coin')
+                                            size = float(pos.get('szi', 0) or 0)
+                                            if abs(size) < 0.00001:
+                                                continue
                                             try:
+                                                await asyncio.sleep(0.2)
                                                 curr_price = await self.hyperliquid.get_current_price(symbol)
                                                 post_positions.append({
                                                     'symbol': symbol,
-                                                    'quantity': float(pos.get('szi', 0) or 0),
+                                                    'quantity': size,
                                                     'entry_price': float(pos.get('entryPx', 0) or 0),
                                                     'current_price': curr_price,
                                                     'liquidation_price': float(pos.get('liquidationPx', 0) or 0),
@@ -1051,7 +1257,6 @@ class TradingBotEngine:
                                     except Exception as e:
                                         self.logger.warning(f"Post-trade state sync failed: {e}")
 
-                                    # Notify GUI of trade
                                     if self.on_trade_executed:
                                         self.on_trade_executed({
                                             'asset': asset,
@@ -1075,10 +1280,7 @@ class TradingBotEngine:
                                 'rationale': rationale
                             })
 
-                    # Update market data in state for dashboard
                     self.state.market_data = market_sections
-                    
-                    # Update state timestamp
                     self.state.last_update = datetime.now(UTC).isoformat()
                     self._notify_state_update()
 
@@ -1088,7 +1290,6 @@ class TradingBotEngine:
                     if self.on_error:
                         self.on_error(str(e))
 
-                # ===== PHASE 12: Sleep Until Next Interval =====
                 await asyncio.sleep(self._get_interval_seconds())
 
         except asyncio.CancelledError:
@@ -1100,11 +1301,8 @@ class TradingBotEngine:
                 self.on_error(str(e))
 
     async def _reconcile_active_trades(self, positions: List[Dict], open_orders: List[Dict]):
-        """
-        Reconcile local active_trades with exchange state.
-        Remove stale entries that no longer exist on exchange.
-        """
-        exchange_assets = {pos.get('coin') for pos in positions}
+        """Reconcile local active_trades with exchange state."""
+        exchange_assets = {pos.get('coin') for pos in positions if abs(float(pos.get('szi', 0) or 0)) > 0.00001}
         order_assets = {o.get('coin') for o in open_orders}
         tracked_assets = exchange_assets | order_assets
 
@@ -1144,7 +1342,7 @@ class TradingBotEngine:
             return int(self.interval[:-1]) * 3600
         elif self.interval.endswith('d'):
             return int(self.interval[:-1]) * 86400
-        return 300  # default 5 minutes
+        return 300
 
     def _notify_state_update(self):
         """Notify GUI of state update via callback"""
@@ -1195,31 +1393,19 @@ class TradingBotEngine:
         return self.interval
 
     async def close_position(self, asset: str) -> bool:
-        """
-        Manually close a position for given asset.
-
-        Args:
-            asset: Asset symbol to close
-
-        Returns:
-            True if successful, False otherwise
-        """
+        """Manually close a position for given asset."""
         try:
-            # Cancel all orders for this asset
             await self.hyperliquid.cancel_all_orders(asset)
 
-            # Find position
             for pos in self.state.positions:
                 if pos['symbol'] == asset:
                     quantity = abs(pos['quantity'])
                     if quantity > 0:
-                        # Close position (reverse direction)
-                        if pos['quantity'] > 0:  # Long position
+                        if pos['quantity'] > 0:
                             await self.hyperliquid.place_sell_order(asset, quantity)
-                        else:  # Short position
+                        else:
                             await self.hyperliquid.place_buy_order(asset, quantity)
 
-                        # Remove from active trades
                         self.active_trades = [
                             t for t in self.active_trades if t['asset'] != asset
                         ]
@@ -1244,63 +1430,39 @@ class TradingBotEngine:
                 self.on_error(f"Failed to close position: {e}")
             return False
     
-    # ===== MANUAL TRADING MODE METHODS =====
-    
     def get_pending_proposals(self) -> List[TradeProposal]:
         """Get list of pending trade proposals"""
         return [p for p in self.pending_proposals if p.is_pending]
     
     def approve_proposal(self, proposal_id: str) -> bool:
-        """
-        Approve and execute a trade proposal.
-        
-        Args:
-            proposal_id: ID of the proposal to approve
-            
-        Returns:
-            True if proposal found and approved, False otherwise
-        """
+        """Approve and execute a trade proposal."""
         proposal = next((p for p in self.pending_proposals if p.id == proposal_id), None)
         
         if not proposal or not proposal.is_pending:
             self.logger.warning(f"Proposal {proposal_id} not found or not pending")
             return False
         
-        # Mark as approved
         proposal.approve()
         self.logger.info(f"[APPROVED] Proposal: {proposal.action.upper()} {proposal.asset} (ID: {proposal_id[:8]})")
         
-        # Execute asynchronously
         asyncio.create_task(self._execute_proposal(proposal))
         
-        # Update state
         self.state.pending_proposals = [p.to_dict() for p in self.pending_proposals if p.is_pending]
         self._notify_state_update()
         
         return True
     
     def reject_proposal(self, proposal_id: str, reason: Optional[str] = None) -> bool:
-        """
-        Reject a trade proposal.
-        
-        Args:
-            proposal_id: ID of the proposal to reject
-            reason: Optional reason for rejection
-            
-        Returns:
-            True if proposal found and rejected, False otherwise
-        """
+        """Reject a trade proposal."""
         proposal = next((p for p in self.pending_proposals if p.id == proposal_id), None)
         
         if not proposal or not proposal.is_pending:
             self.logger.warning(f"Proposal {proposal_id} not found or not pending")
             return False
         
-        # Mark as rejected
         proposal.reject(reason or "Rejected by user")
         self.logger.info(f"[REJECTED] Proposal: {proposal.action.upper()} {proposal.asset} (ID: {proposal_id[:8]})")
         
-        # Write to diary
         self._write_diary_entry({
             'timestamp': datetime.now(UTC).isoformat(),
             'asset': proposal.asset,
@@ -1310,39 +1472,36 @@ class TradingBotEngine:
             'rationale': proposal.rationale
         })
         
-        # Update state
         self.state.pending_proposals = [p.to_dict() for p in self.pending_proposals if p.is_pending]
         self._notify_state_update()
         
         return True
     
     async def _execute_proposal(self, proposal: TradeProposal):
-        """
-        Execute an approved trade proposal.
-        
-        Args:
-            proposal: The approved proposal to execute
-        """
+        """Execute an approved trade proposal."""
         try:
             self.logger.info(f"Executing proposal: {proposal.action.upper()} {proposal.asset}")
             
-            # ===== NEW: PRE-TRADE VERIFICATION FOR PROPOSALS =====
             pre_check = await self._verify_position_before_trade(proposal.asset, proposal.action)
             
             if not pre_check['should_execute']:
                 self.logger.warning(f"⏭️ SKIPPING proposal {proposal.id[:8]}: {pre_check['warning']}")
                 proposal.mark_failed(pre_check['warning'])
                 return
-            # ===== END NEW =====
             
-            # Get fresh price
+            await asyncio.sleep(0.3)
             current_price = await self.hyperliquid.get_current_price(proposal.asset)
             amount = proposal.size
             
             if amount <= 0:
                 raise ValueError(f"Invalid amount: {amount}")
             
-            # Place market order
+            # Validate TP/SL
+            validation = self._validate_tp_sl(proposal.action, current_price, proposal.tp_price, proposal.sl_price)
+            for warning in validation['warnings']:
+                self.logger.warning(f"⚠️ TP/SL VALIDATION: {warning}")
+            
+            await asyncio.sleep(0.3)
             if proposal.action == 'buy':
                 order_result = await self.hyperliquid.place_buy_order(proposal.asset, amount)
             elif proposal.action == 'sell':
@@ -1352,11 +1511,9 @@ class TradingBotEngine:
             
             self.logger.info(f"Order placed: {proposal.action} {proposal.asset}: {amount:.6f} @ {current_price}")
             
-            # Post-trade verification
             expected_side = 'long' if proposal.action == 'buy' else 'short'
             await self._verify_post_trade(proposal.asset, expected_side, amount)
             
-            # Wait and check fills
             await asyncio.sleep(1)
             recent_fills = await self.hyperliquid.get_recent_fills(limit=5)
             filled = any(
@@ -1365,46 +1522,46 @@ class TradingBotEngine:
                 for f in recent_fills
             )
             
-            # ===== CANCEL EXISTING ORDERS BEFORE PLACING NEW TP/SL =====
             try:
                 existing_orders = await self.hyperliquid.get_open_orders()
                 for order in existing_orders:
                     if order.get('coin') == proposal.asset:
                         oid = order.get('oid')
                         if oid:
+                            await asyncio.sleep(0.3)
                             await self.hyperliquid.cancel_order(proposal.asset, oid)
             except Exception as e:
                 self.logger.warning(f"Failed to cancel existing orders: {e}")
             
-            # Place TP/SL if specified
             tp_oid = None
             sl_oid = None
             
-            if proposal.tp_price:
+            if validation['tp_price']:
                 try:
                     is_buy = (proposal.action == 'buy')
+                    await asyncio.sleep(0.3)
                     tp_order = await self.hyperliquid.place_take_profit(
-                        proposal.asset, is_buy, amount, proposal.tp_price
+                        proposal.asset, is_buy, amount, validation['tp_price']
                     )
                     oids = self.hyperliquid.extract_oids(tp_order)
                     tp_oid = oids[0] if oids else None
-                    self.logger.info(f"Placed TP order @ {proposal.tp_price}")
+                    self.logger.info(f"Placed TP order @ {validation['tp_price']}")
                 except Exception as e:
                     self.logger.error(f"Failed to place TP: {e}")
             
-            if proposal.sl_price:
+            if validation['sl_price']:
                 try:
                     is_buy = (proposal.action == 'buy')
+                    await asyncio.sleep(0.3)
                     sl_order = await self.hyperliquid.place_stop_loss(
-                        proposal.asset, is_buy, amount, proposal.sl_price
+                        proposal.asset, is_buy, amount, validation['sl_price']
                     )
                     oids = self.hyperliquid.extract_oids(sl_order)
                     sl_oid = oids[0] if oids else None
-                    self.logger.info(f"Placed SL order @ {proposal.sl_price}")
+                    self.logger.info(f"Placed SL order @ {validation['sl_price']}")
                 except Exception as e:
                     self.logger.error(f"Failed to place SL: {e}")
             
-            # Update active trades
             self.active_trades = [
                 t for t in self.active_trades if t['asset'] != proposal.asset
             ]
@@ -1420,10 +1577,8 @@ class TradingBotEngine:
                 'from_proposal': proposal.id
             })
             
-            # Mark proposal as executed
             proposal.mark_executed(current_price)
             
-            # Write to diary
             self._write_diary_entry({
                 'timestamp': datetime.now(UTC).isoformat(),
                 'asset': proposal.asset,
@@ -1431,9 +1586,9 @@ class TradingBotEngine:
                 'allocation_usd': proposal.allocation,
                 'amount': amount,
                 'entry_price': current_price,
-                'tp_price': proposal.tp_price,
+                'tp_price': validation['tp_price'],
                 'tp_oid': tp_oid,
-                'sl_price': proposal.sl_price,
+                'sl_price': validation['sl_price'],
                 'sl_oid': sl_oid,
                 'rationale': proposal.rationale,
                 'order_result': str(order_result),
@@ -1442,7 +1597,6 @@ class TradingBotEngine:
                 'approved_manually': True
             })
             
-            # Notify GUI
             if self.on_trade_executed:
                 self.on_trade_executed({
                     'asset': proposal.asset,
@@ -1463,6 +1617,5 @@ class TradingBotEngine:
                 self.on_error(f"Failed to execute trade: {e}")
         
         finally:
-            # Update state
             self.state.pending_proposals = [p.to_dict() for p in self.pending_proposals if p.is_pending]
             self._notify_state_update()
