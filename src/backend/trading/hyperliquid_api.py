@@ -350,6 +350,12 @@ class HyperliquidAPI:
         """
         try:
             orders = await self._retry(lambda: self.info.frontend_open_orders(self.wallet.address))
+            
+            # DIAGNOSTIC: Log raw response
+            logging.debug(f"📋 get_open_orders: Received {len(orders)} orders from SDK")
+            if orders:
+                logging.debug(f"📋 get_open_orders: First order sample: {orders[0] if orders else 'N/A'}")
+            
             # Normalize trigger price if present in orderType
             for o in orders:
                 try:
