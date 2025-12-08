@@ -5,6 +5,12 @@ single entry point for submitting trades, managing orders, and retrieving market
 state.  It normalizes retry behaviour, adds logging, and caches metadata so that
 the trading agent can depend on predictable, non-blocking IO.
 
+V5 CHANGES:
+- Added round_price() method to round prices to exchange tick size
+- Added TICK_SIZES constant with per-asset tick sizes
+- place_take_profit and place_stop_loss now automatically round prices
+- Better error messages for price rejection
+
 V4 CHANGES:
 - Added response logging and validation for place_take_profit
 - Added response logging and validation for place_stop_loss  
@@ -37,6 +43,7 @@ if TYPE_CHECKING:
 else:
     Account = _Account
 
+
 class HyperliquidAPI:
     """Facade around Hyperliquid SDK clients with async convenience methods.
 
@@ -44,6 +51,46 @@ class HyperliquidAPI:
     coroutine helpers that keep retry semantics and logging consistent across
     the trading agent.
     """
+
+    # ===== TICK SIZES FOR PRICE ROUNDING =====
+    # Hyperliquid requires prices to be rounded to specific tick sizes
+    # These values are from Hyperliquid's asset metadata
+    # Reference: https://hyperliquid.gitbook.io/hyperliquid-docs/trading/asset-specifications
+    TICK_SIZES = {
+        "BTC": 1.0,      # $1.00 tick size
+        "ETH": 0.1,      # $0.10 tick size
+        "SOL": 0.01,     # $0.01 tick size
+        "AVAX": 0.01,
+        "MATIC": 0.0001,
+        "LINK": 0.001,
+        "DOGE": 0.00001,
+        "ARB": 0.0001,
+        "OP": 0.001,
+        "APT": 0.01,
+        "INJ": 0.01,
+        "SUI": 0.0001,
+        "SEI": 0.0001,
+        "TIA": 0.001,
+        "ATOM": 0.001,
+        "DOT": 0.001,
+        "FTM": 0.0001,
+        "NEAR": 0.001,
+        "WLD": 0.001,
+        "BLUR": 0.0001,
+        "LDO": 0.001,
+        "GMX": 0.01,
+        "STX": 0.0001,
+        "ORDI": 0.01,
+        "PEPE": 0.00000001,
+        "WIF": 0.0001,
+        "BONK": 0.000000001,
+        "JUP": 0.0001,
+        "PENDLE": 0.001,
+        "W": 0.0001,
+        "ENA": 0.0001,
+        # Default for unknown assets
+        "_DEFAULT": 0.01
+    }
 
     def __init__(self):
         """Initialize wallet credentials and instantiate exchange clients.
@@ -151,6 +198,63 @@ class HyperliquidAPI:
                     continue
                 break
         raise last_err if last_err else RuntimeError("Hyperliquid retry: unknown error")
+
+    def get_tick_size(self, asset: str) -> float:
+        """Get the tick size (minimum price increment) for an asset.
+        
+        Args:
+            asset: Asset symbol (e.g., "BTC", "ETH")
+            
+        Returns:
+            Tick size as float
+        """
+        return self.TICK_SIZES.get(asset.upper(), self.TICK_SIZES["_DEFAULT"])
+
+    def round_price(self, asset: str, price: float) -> float:
+        """Round a price to the correct tick size for the asset.
+        
+        CRITICAL: Hyperliquid rejects orders with prices not aligned to tick size.
+        This method ensures all prices are properly rounded.
+        
+        Args:
+            asset: Asset symbol (e.g., "BTC", "ETH")
+            price: Raw price to round
+            
+        Returns:
+            Price rounded to the asset's tick size
+            
+        Examples:
+            >>> api.round_price("BTC", 92700.51)
+            92701.0
+            >>> api.round_price("ETH", 3128.45)
+            3128.5
+            >>> api.round_price("SOL", 145.678)
+            145.68
+        """
+        if price is None or price <= 0:
+            return price
+            
+        tick_size = self.get_tick_size(asset)
+        
+        # Round to nearest tick
+        rounded = round(price / tick_size) * tick_size
+        
+        # Determine decimal places from tick size
+        if tick_size >= 1:
+            decimals = 0
+        else:
+            # Count decimal places in tick size
+            tick_str = f"{tick_size:.10f}".rstrip('0')
+            if '.' in tick_str:
+                decimals = len(tick_str.split('.')[1])
+            else:
+                decimals = 0
+        
+        # Final round to avoid floating point errors
+        rounded = round(rounded, decimals)
+        
+        logging.debug(f"round_price({asset}, {price}) -> {rounded} (tick_size={tick_size})")
+        return rounded
 
     def round_size(self, asset, amount):
         """Round order size to the asset precision defined by market metadata.
@@ -260,6 +364,13 @@ class HyperliquidAPI:
                 - 'raw_response': original API response
         """
         amount = self.round_size(asset, amount)
+        
+        # ===== CRITICAL: Round price to tick size =====
+        original_price = tp_price
+        tp_price = self.round_price(asset, tp_price)
+        if original_price != tp_price:
+            logging.info(f"📐 TP price rounded: {original_price} -> {tp_price} (tick size: {self.get_tick_size(asset)})")
+        
         order_type = {"trigger": {"triggerPx": tp_price, "isMarket": True, "tpsl": "tp"}}
         
         logging.info(f"📤 Placing TP order: {asset} {'LONG→SELL' if is_buy else 'SHORT→BUY'} {amount} @ {tp_price}")
@@ -297,6 +408,13 @@ class HyperliquidAPI:
                 - 'raw_response': original API response
         """
         amount = self.round_size(asset, amount)
+        
+        # ===== CRITICAL: Round price to tick size =====
+        original_price = sl_price
+        sl_price = self.round_price(asset, sl_price)
+        if original_price != sl_price:
+            logging.info(f"📐 SL price rounded: {original_price} -> {sl_price} (tick size: {self.get_tick_size(asset)})")
+        
         order_type = {"trigger": {"triggerPx": sl_price, "isMarket": True, "tpsl": "sl"}}
         
         logging.info(f"📤 Placing SL order: {asset} {'LONG→SELL' if is_buy else 'SHORT→BUY'} {amount} @ {sl_price}")
