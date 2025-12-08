@@ -2,19 +2,12 @@
 Trading Bot Engine - Core trading logic separated from UI
 Refactored from ai-trading-agent/src/main.py
 
-PATCH v5: 
-- CRITICAL: Fixed TP/SL order parsing - API returns orderType as STRING not dict!
-- CRITICAL: Added position verification before placing TP/SL on HOLD
-- CRITICAL: Startup sync with exchange before any trading
-- CRITICAL: Block trading if sync fails (don't continue with stale data)
-- CRITICAL: Validate TP/SL sanity in code
-- CRITICAL: Handle existing positions on startup
-- Improved rate limit handling with proper backoff
-- v4: TP/SL response validation - check if orders were actually accepted
-- v4: Log actual error messages when TP/SL orders are rejected
-- v5: Fixed parsing of 'orderType': 'Stop Market' vs 'Take Profit Market'
-- v5: Parse triggerPx directly from order, not from nested dict
-- v5: Verify position exists before placing TP/SL on HOLD action
+PATCH v6: 
+- CRITICAL: Price rounding to tick size via hyperliquid_api.round_price()
+- CRITICAL: Stricter TP/SL validation (max 20% from entry, direction check)
+- CRITICAL: Reduced order churn - only update TP/SL if prices changed significantly
+- CRITICAL: Better handling of LLM absurd values
+- All previous v5 fixes included
 """
 
 import asyncio
@@ -60,6 +53,16 @@ class TradingBotEngine:
     Core trading bot engine independent of UI.
     Communicates with GUI via callback system.
     """
+
+    # ===== TP/SL VALIDATION LIMITS =====
+    # Maximum distance from entry price for TP/SL (as percentage)
+    MAX_TP_DISTANCE_PCT = 20.0  # 20% max profit target
+    MAX_SL_DISTANCE_PCT = 15.0  # 15% max stop loss
+    MIN_TP_DISTANCE_PCT = 0.3   # 0.3% minimum TP (avoid tiny targets)
+    MIN_SL_DISTANCE_PCT = 0.3   # 0.3% minimum SL (avoid tiny stops)
+    
+    # Minimum price change to trigger TP/SL update (avoid churn)
+    MIN_PRICE_CHANGE_PCT = 0.5  # Only update if price changed by 0.5%+
 
     def __init__(
         self,
@@ -113,7 +116,7 @@ class TradingBotEngine:
         self.diary_path = Path("data/diary.jsonl")
         self.diary_path.parent.mkdir(parents=True, exist_ok=True)
         
-        # ===== NEW: Rate limit tracking =====
+        # ===== Rate limit tracking =====
         self._last_hl_call = 0.0
         self._hl_call_delay = 0.5  # Minimum delay between Hyperliquid API calls
         self._consecutive_429s = 0
@@ -158,7 +161,6 @@ class TradingBotEngine:
         self.invocation_count = 0
 
         # ===== CRITICAL: STARTUP SYNC =====
-        # Must sync with exchange BEFORE any trading to detect existing positions
         self.logger.info("🚀 STARTUP: Syncing with exchange...")
         try:
             startup_success = await self._startup_sync()
@@ -195,7 +197,6 @@ class TradingBotEngine:
                 await asyncio.sleep(2)  # Initial delay to avoid burst
                 state = await self.hyperliquid.get_user_state()
                 
-                # ===== DIAGNOSTIC: Log positions received =====
                 self.logger.info(f"📊 STARTUP: Received {len(state.get('positions', []))} positions from exchange")
                 
                 self.initial_account_value = state.get('total_value', 0.0)
@@ -203,10 +204,9 @@ class TradingBotEngine:
                     self.initial_account_value = state.get('balance', 10000.0)
                 
                 # Get open orders
-                await asyncio.sleep(2)  # Delay between calls
+                await asyncio.sleep(2)
                 open_orders = await self.hyperliquid.get_open_orders()
                 
-                # ===== DIAGNOSTIC: Log what we received =====
                 self.logger.info(f"📋 STARTUP: Received {len(open_orders)} open orders")
                 for idx, order in enumerate(open_orders):
                     coin = order.get('coin')
@@ -214,7 +214,7 @@ class TradingBotEngine:
                     side = order.get('side')
                     sz = order.get('sz')
                     
-                    # Parse trigger info from CORRECT API format
+                    # Parse trigger info
                     trigger_info = "N/A"
                     order_type_str = order.get('orderType', '')
                     trigger_px = order.get('triggerPx')
@@ -229,9 +229,8 @@ class TradingBotEngine:
                             trigger_info = f"trigger@{trigger_px}"
                     
                     self.logger.info(f"  📋 Order[{idx}]: {coin} oid={oid} side={side} sz={sz} type={order_type_str} {trigger_info}")
-                    self.logger.debug(f"  📋 Order[{idx}] RAW: {order}")
                 
-                # ===== CRITICAL: Import existing positions into active_trades =====
+                # ===== Import existing positions into active_trades =====
                 existing_positions = []
                 for pos in state['positions']:
                     asset = pos.get('coin')
@@ -241,9 +240,7 @@ class TradingBotEngine:
                         entry_price = float(pos.get('entryPx', 0) or 0)
                         is_long = size > 0
                         
-                        self.logger.debug(f"🔍 Looking for TP/SL orders for {asset} in {len(open_orders)} orders...")
-                        
-                        # Find associated TP/SL orders WITH PRICES
+                        # Find associated TP/SL orders
                         tp_oid = None
                         sl_oid = None
                         tp_price = None
@@ -252,42 +249,32 @@ class TradingBotEngine:
                         for order in open_orders:
                             order_coin = order.get('coin')
                             if order_coin == asset:
-                                self.logger.debug(f"🔍 Found order for {asset}: {order}")
-                                
-                                # API returns orderType as STRING, not dict!
-                                # Examples: "Stop Market", "Take Profit Market", "Limit"
                                 order_type_str = order.get('orderType', '')
-                                trigger_px = order.get('triggerPx')  # Direct field, not nested!
+                                trigger_px = order.get('triggerPx')
                                 trigger_condition = order.get('triggerCondition', '')
                                 is_trigger = order.get('isTrigger', False)
                                 
                                 if is_trigger and trigger_px:
-                                    # Determine if TP or SL from orderType string or triggerCondition
-                                    if 'Take Profit' in order_type_str or 'above' in trigger_condition.lower():
+                                    if 'Take Profit' in str(order_type_str) or 'above' in trigger_condition.lower():
                                         tp_oid = order.get('oid')
                                         tp_price = float(trigger_px) if trigger_px else None
-                                        self.logger.debug(f"  → Identified as TP: oid={tp_oid}, price={tp_price}")
-                                    elif 'Stop' in order_type_str or 'below' in trigger_condition.lower():
+                                    elif 'Stop' in str(order_type_str) or 'below' in trigger_condition.lower():
                                         sl_oid = order.get('oid')
                                         sl_price = float(trigger_px) if trigger_px else None
-                                        self.logger.debug(f"  → Identified as SL: oid={sl_oid}, price={sl_price}")
                                 
-                                # FALLBACK: Also check old format (orderType as dict) for compatibility
-                                if not (tp_oid or sl_oid):  # Only if not already found
-                                    order_type_dict = order.get('orderType', {})
-                                    if isinstance(order_type_dict, dict) and 'trigger' in order_type_dict:
-                                        trigger = order_type_dict.get('trigger', {})
-                                        tpsl = trigger.get('tpsl')
-                                        trigger_px_old = trigger.get('triggerPx')
-                                        
-                                        if tpsl == 'tp' and not tp_oid:
-                                            tp_oid = order.get('oid')
-                                            tp_price = float(trigger_px_old) if trigger_px_old else None
-                                            self.logger.debug(f"  → (fallback) Identified as TP: oid={tp_oid}")
-                                        elif tpsl == 'sl' and not sl_oid:
-                                            sl_oid = order.get('oid')
-                                            sl_price = float(trigger_px_old) if trigger_px_old else None
-                                            self.logger.debug(f"  → (fallback) Identified as SL: oid={sl_oid}")
+                                # Fallback for old API format
+                                order_type_dict = order.get('orderType', {})
+                                if isinstance(order_type_dict, dict) and 'trigger' in order_type_dict:
+                                    trigger = order_type_dict.get('trigger', {})
+                                    tpsl = trigger.get('tpsl')
+                                    trigger_px_old = trigger.get('triggerPx')
+                                    
+                                    if tpsl == 'tp' and not tp_oid:
+                                        tp_oid = order.get('oid')
+                                        tp_price = float(trigger_px_old) if trigger_px_old else None
+                                    elif tpsl == 'sl' and not sl_oid:
+                                        sl_oid = order.get('oid')
+                                        sl_price = float(trigger_px_old) if trigger_px_old else None
                         
                         trade_entry = {
                             'asset': asset,
@@ -296,8 +283,8 @@ class TradingBotEngine:
                             'entry_price': entry_price,
                             'tp_oid': tp_oid,
                             'sl_oid': sl_oid,
-                            'tp_price': tp_price,  # NEW: Store the actual price
-                            'sl_price': sl_price,  # NEW: Store the actual price
+                            'tp_price': tp_price,
+                            'sl_price': sl_price,
                             'exit_plan': 'Imported from existing position on startup',
                             'opened_at': datetime.now(UTC).isoformat(),
                             'imported_on_startup': True
@@ -305,7 +292,6 @@ class TradingBotEngine:
                         
                         self.active_trades.append(trade_entry)
                         
-                        # Build detailed position info for logging
                         tp_info = f"TP@${tp_price:,.2f}" if tp_price else "no TP"
                         sl_info = f"SL@${sl_price:,.2f}" if sl_price else "no SL"
                         existing_positions.append(f"{asset} {'LONG' if is_long else 'SHORT'} {abs(size):.6f}")
@@ -323,7 +309,7 @@ class TradingBotEngine:
                 else:
                     self.logger.info("✅ STARTUP: No existing positions found")
                 
-                # Clean up orphan orders (orders without positions)
+                # Clean up orphan orders
                 await self._cleanup_orphan_orders(state['positions'], open_orders)
                 
                 self.logger.info(f"✅ STARTUP SYNC COMPLETE: Balance=${state['balance']:,.2f}, Positions={len(existing_positions)}")
@@ -349,7 +335,7 @@ class TradingBotEngine:
                 try:
                     oid = order.get('oid')
                     if oid:
-                        await asyncio.sleep(0.3)  # Rate limit protection
+                        await asyncio.sleep(0.3)
                         await self.hyperliquid.cancel_order(asset, oid)
                         orphan_count += 1
                         self.logger.info(f"🧹 Cancelled orphan order: {asset} oid={oid}")
@@ -377,14 +363,17 @@ class TradingBotEngine:
         self.logger.info("Bot stopped")
         self._notify_state_update()
 
-    # ===== NEW: TP/SL VALIDATION =====
-    def _validate_tp_sl(self, action: str, current_price: float, tp_price: Optional[float], sl_price: Optional[float]) -> Dict[str, Any]:
+    # ===== IMPROVED: TP/SL VALIDATION WITH STRICTER LIMITS =====
+    def _validate_tp_sl(self, asset: str, action: str, current_price: float, 
+                        tp_price: Optional[float], sl_price: Optional[float]) -> Dict[str, Any]:
         """
-        Validate and optionally fix TP/SL prices.
+        Validate and fix TP/SL prices with strict limits.
         
         Rules:
         - BUY (LONG): TP > current_price, SL < current_price
         - SELL (SHORT): TP < current_price, SL > current_price
+        - Max distance from entry: TP 20%, SL 15%
+        - Prices rounded to tick size
         
         Returns:
             Dict with 'tp_price', 'sl_price', 'warnings' list
@@ -393,41 +382,58 @@ class TradingBotEngine:
         validated_tp = tp_price
         validated_sl = sl_price
         
+        # ===== STEP 1: Round prices to tick size =====
+        if validated_tp is not None:
+            original_tp = validated_tp
+            validated_tp = self.hyperliquid.round_price(asset, validated_tp)
+            if original_tp != validated_tp:
+                warnings.append(f"TP rounded: {original_tp} -> {validated_tp}")
+        
+        if validated_sl is not None:
+            original_sl = validated_sl
+            validated_sl = self.hyperliquid.round_price(asset, validated_sl)
+            if original_sl != validated_sl:
+                warnings.append(f"SL rounded: {original_sl} -> {validated_sl}")
+        
+        # ===== STEP 2: Direction validation =====
         if action == 'buy':
             # LONG position
-            if tp_price is not None and tp_price <= current_price:
-                warnings.append(f"TP {tp_price} <= entry {current_price} for LONG - INVALID, setting to None")
+            if validated_tp is not None and validated_tp <= current_price:
+                warnings.append(f"❌ TP {validated_tp} <= entry {current_price} for LONG - INVALID")
                 validated_tp = None
             
-            if sl_price is not None and sl_price >= current_price:
-                warnings.append(f"SL {sl_price} >= entry {current_price} for LONG - INVALID, setting to None")
+            if validated_sl is not None and validated_sl >= current_price:
+                warnings.append(f"❌ SL {validated_sl} >= entry {current_price} for LONG - INVALID")
                 validated_sl = None
-                
-            # Sanity check: TP shouldn't be too far (>50% gain)
-            if validated_tp and validated_tp > current_price * 1.5:
-                warnings.append(f"TP {validated_tp} is >50% above entry - unusually high")
-                
-            # Sanity check: SL shouldn't be too far (>30% loss)
-            if validated_sl and validated_sl < current_price * 0.7:
-                warnings.append(f"SL {validated_sl} is >30% below entry - consider tighter stop")
                 
         elif action == 'sell':
             # SHORT position
-            if tp_price is not None and tp_price >= current_price:
-                warnings.append(f"TP {tp_price} >= entry {current_price} for SHORT - INVALID, setting to None")
+            if validated_tp is not None and validated_tp >= current_price:
+                warnings.append(f"❌ TP {validated_tp} >= entry {current_price} for SHORT - INVALID")
                 validated_tp = None
             
-            if sl_price is not None and sl_price <= current_price:
-                warnings.append(f"SL {sl_price} <= entry {current_price} for SHORT - INVALID, setting to None")
+            if validated_sl is not None and validated_sl <= current_price:
+                warnings.append(f"❌ SL {validated_sl} <= entry {current_price} for SHORT - INVALID")
                 validated_sl = None
-                
-            # Sanity check: TP shouldn't be too far (>50% gain)
-            if validated_tp and validated_tp < current_price * 0.5:
-                warnings.append(f"TP {validated_tp} is >50% below entry - unusually low")
-                
-            # Sanity check: SL shouldn't be too far (>30% loss)
-            if validated_sl and validated_sl > current_price * 1.3:
-                warnings.append(f"SL {validated_sl} is >30% above entry - consider tighter stop")
+        
+        # ===== STEP 3: Distance validation (max limits) =====
+        if validated_tp is not None:
+            tp_distance_pct = abs(validated_tp - current_price) / current_price * 100
+            
+            if tp_distance_pct > self.MAX_TP_DISTANCE_PCT:
+                warnings.append(f"❌ TP distance {tp_distance_pct:.1f}% > {self.MAX_TP_DISTANCE_PCT}% limit - INVALID")
+                validated_tp = None
+            elif tp_distance_pct < self.MIN_TP_DISTANCE_PCT:
+                warnings.append(f"⚠️ TP distance {tp_distance_pct:.2f}% < {self.MIN_TP_DISTANCE_PCT}% - very tight target")
+        
+        if validated_sl is not None:
+            sl_distance_pct = abs(validated_sl - current_price) / current_price * 100
+            
+            if sl_distance_pct > self.MAX_SL_DISTANCE_PCT:
+                warnings.append(f"❌ SL distance {sl_distance_pct:.1f}% > {self.MAX_SL_DISTANCE_PCT}% limit - INVALID")
+                validated_sl = None
+            elif sl_distance_pct < self.MIN_SL_DISTANCE_PCT:
+                warnings.append(f"⚠️ SL distance {sl_distance_pct:.2f}% < {self.MIN_SL_DISTANCE_PCT}% - very tight stop")
         
         return {
             'tp_price': validated_tp,
@@ -435,17 +441,64 @@ class TradingBotEngine:
             'warnings': warnings
         }
 
+    def _should_update_tpsl(self, tracked_trade: Dict, new_tp: Optional[float], 
+                            new_sl: Optional[float]) -> Dict[str, bool]:
+        """
+        Check if TP/SL should be updated (to reduce order churn).
+        
+        Only update if:
+        - New price is set and old was None
+        - Price changed by more than MIN_PRICE_CHANGE_PCT
+        
+        Returns:
+            Dict with 'update_tp' and 'update_sl' booleans
+        """
+        update_tp = False
+        update_sl = False
+        
+        old_tp = tracked_trade.get('tp_price')
+        old_sl = tracked_trade.get('sl_price')
+        
+        # Check TP
+        if new_tp is not None:
+            if old_tp is None:
+                update_tp = True
+                self.logger.info(f"📊 TP update needed: None -> {new_tp}")
+            elif old_tp > 0:
+                change_pct = abs(new_tp - old_tp) / old_tp * 100
+                if change_pct >= self.MIN_PRICE_CHANGE_PCT:
+                    update_tp = True
+                    self.logger.info(f"📊 TP update needed: {old_tp} -> {new_tp} ({change_pct:.2f}% change)")
+                else:
+                    self.logger.debug(f"📊 TP unchanged: {old_tp} ~= {new_tp} ({change_pct:.2f}% < {self.MIN_PRICE_CHANGE_PCT}%)")
+        
+        # Check SL
+        if new_sl is not None:
+            if old_sl is None:
+                update_sl = True
+                self.logger.info(f"📊 SL update needed: None -> {new_sl}")
+            elif old_sl > 0:
+                change_pct = abs(new_sl - old_sl) / old_sl * 100
+                if change_pct >= self.MIN_PRICE_CHANGE_PCT:
+                    update_sl = True
+                    self.logger.info(f"📊 SL update needed: {old_sl} -> {new_sl} ({change_pct:.2f}% change)")
+                else:
+                    self.logger.debug(f"📊 SL unchanged: {old_sl} ~= {new_sl} ({change_pct:.2f}% < {self.MIN_PRICE_CHANGE_PCT}%)")
+        
+        return {
+            'update_tp': update_tp,
+            'update_sl': update_sl
+        }
+
     async def _sync_exchange_state(self) -> Optional[Dict[str, Any]]:
         """
         Sync with exchange to get fresh position state.
-        
-        IMPROVED v3: Returns None on failure instead of raising.
-        Caller should handle None appropriately (skip trading).
+        Returns None on failure instead of raising.
         """
         self.logger.info("🔄 PRE-DECISION SYNC: Fetching fresh exchange state...")
         
         try:
-            await asyncio.sleep(2)  # Rate limit protection - increased for testnet
+            await asyncio.sleep(2)
             state = await self.hyperliquid.get_user_state()
             
             await asyncio.sleep(1)
@@ -519,7 +572,7 @@ class TradingBotEngine:
                 })
             
             self.logger.info(f"🔄 SYNC COMPLETE: {len(enriched_positions)} positions, {len(open_orders)} orders")
-            self._consecutive_429s = 0  # Reset on success
+            self._consecutive_429s = 0
             
             return {
                 'positions': enriched_positions,
@@ -537,7 +590,7 @@ class TradingBotEngine:
                 self.logger.error(f"❌ SYNC RATE LIMITED (429): {self._consecutive_429s} consecutive failures")
             else:
                 self.logger.error(f"❌ SYNC FAILED: {e}")
-            return None  # Return None instead of raising
+            return None
 
     async def _get_real_position(self, asset: str) -> Optional[Dict]:
         """Get the REAL current position for an asset from the exchange."""
@@ -595,12 +648,10 @@ class TradingBotEngine:
                     trade['amount'] = real['size']
                     updated.append(asset)
 
-        # ===== NEW: Add positions that exist on exchange but not tracked =====
+        # Add positions that exist on exchange but not tracked
         for asset, real in real_positions.items():
             tracked = next((t for t in self.active_trades if t['asset'] == asset), None)
             if not tracked:
-                # Position exists on exchange but we're not tracking it!
-                # Try to find associated TP/SL orders
                 tp_oid = None
                 sl_oid = None
                 tp_price = None
@@ -608,9 +659,8 @@ class TradingBotEngine:
                 
                 for order in open_orders_raw:
                     if order.get('coin') == asset:
-                        # API returns orderType as STRING, not dict!
                         order_type_str = order.get('orderType', '')
-                        trigger_px = order.get('triggerPx')  # Direct field
+                        trigger_px = order.get('triggerPx')
                         trigger_condition = order.get('triggerCondition', '')
                         is_trigger = order.get('isTrigger', False)
                         
@@ -622,7 +672,6 @@ class TradingBotEngine:
                                 sl_oid = order.get('oid')
                                 sl_price = float(trigger_px) if trigger_px else None
                         
-                        # FALLBACK: Also check old format (orderType as dict)
                         order_type_dict = order.get('orderType', {})
                         if isinstance(order_type_dict, dict) and 'trigger' in order_type_dict:
                             trigger = order_type_dict.get('trigger', {})
@@ -670,10 +719,7 @@ class TradingBotEngine:
         return removed
 
     async def _verify_position_before_trade(self, asset: str, intended_action: str) -> Dict[str, Any]:
-        """
-        IMPROVED v3: Verify position state BEFORE executing a trade.
-        Now also checks for UNTRACKED existing positions.
-        """
+        """Verify position state BEFORE executing a trade."""
         real_pos = await self._get_real_position(asset)
         tracked = next((t for t in self.active_trades if t['asset'] == asset), None)
         
@@ -684,13 +730,11 @@ class TradingBotEngine:
             'adjust_size': None
         }
         
-        # ===== NEW: Check for untracked existing position =====
+        # Check for untracked existing position
         if not tracked and real_pos:
-            # We're NOT tracking this asset but exchange has a position!
-            result['warning'] = f"UNTRACKED position exists: {real_pos['side']} {real_pos['size']}. Adding to tracking instead of executing."
+            result['warning'] = f"UNTRACKED position exists: {real_pos['side']} {real_pos['size']}. Adding to tracking."
             result['should_execute'] = False
             
-            # Add to tracking
             self.active_trades.append({
                 'asset': asset,
                 'is_long': (real_pos['side'] == 'long'),
@@ -769,23 +813,110 @@ class TradingBotEngine:
             self.logger.error(f"❌ POST-TRADE VERIFY failed: {e}")
             return False
 
+    async def _place_tpsl_orders(self, asset: str, is_long: bool, amount: float, 
+                                  tp_price: Optional[float], sl_price: Optional[float],
+                                  tracked_trade: Optional[Dict] = None) -> Dict[str, Any]:
+        """
+        Place TP/SL orders with churn reduction.
+        Only cancels and replaces if prices changed significantly.
+        
+        Returns:
+            Dict with 'tp_oid', 'sl_oid', 'tp_placed', 'sl_placed'
+        """
+        result = {
+            'tp_oid': None,
+            'sl_oid': None,
+            'tp_placed': False,
+            'sl_placed': False
+        }
+        
+        # Check if update is needed
+        update_needed = {'update_tp': True, 'update_sl': True}
+        if tracked_trade:
+            update_needed = self._should_update_tpsl(tracked_trade, tp_price, sl_price)
+        
+        # Determine which orders to cancel
+        orders_to_cancel = []
+        if tracked_trade:
+            if update_needed['update_tp'] and tracked_trade.get('tp_oid'):
+                orders_to_cancel.append(('TP', tracked_trade['tp_oid']))
+            if update_needed['update_sl'] and tracked_trade.get('sl_oid'):
+                orders_to_cancel.append(('SL', tracked_trade['sl_oid']))
+        
+        # Cancel only necessary orders
+        for order_type, oid in orders_to_cancel:
+            try:
+                await asyncio.sleep(0.3)
+                await self.hyperliquid.cancel_order(asset, oid)
+                self.logger.info(f"🧹 Cancelled {order_type} order for {asset} (oid: {oid})")
+            except Exception as e:
+                self.logger.warning(f"Failed to cancel {order_type} order: {e}")
+        
+        # Place TP if needed
+        if tp_price and update_needed['update_tp']:
+            try:
+                await asyncio.sleep(0.3)
+                tp_result = await self.hyperliquid.place_take_profit(asset, is_long, amount, tp_price)
+                
+                if isinstance(tp_result, dict) and tp_result.get('success'):
+                    result['tp_oid'] = tp_result.get('oid')
+                    result['tp_placed'] = True
+                    self.logger.info(f"✅ Placed TP order for {asset} @ {tp_price}")
+                elif isinstance(tp_result, dict):
+                    self.logger.error(f"❌ TP order REJECTED for {asset}: {tp_result.get('error', 'unknown')}")
+                else:
+                    oids = self.hyperliquid.extract_oids(tp_result)
+                    if oids:
+                        result['tp_oid'] = oids[0]
+                        result['tp_placed'] = True
+            except Exception as e:
+                self.logger.error(f"Failed to place TP: {e}")
+        elif tracked_trade and not update_needed['update_tp']:
+            # Keep existing TP
+            result['tp_oid'] = tracked_trade.get('tp_oid')
+        
+        # Place SL if needed
+        if sl_price and update_needed['update_sl']:
+            try:
+                await asyncio.sleep(0.3)
+                sl_result = await self.hyperliquid.place_stop_loss(asset, is_long, amount, sl_price)
+                
+                if isinstance(sl_result, dict) and sl_result.get('success'):
+                    result['sl_oid'] = sl_result.get('oid')
+                    result['sl_placed'] = True
+                    self.logger.info(f"✅ Placed SL order for {asset} @ {sl_price}")
+                elif isinstance(sl_result, dict):
+                    self.logger.error(f"❌ SL order REJECTED for {asset}: {sl_result.get('error', 'unknown')}")
+                else:
+                    oids = self.hyperliquid.extract_oids(sl_result)
+                    if oids:
+                        result['sl_oid'] = oids[0]
+                        result['sl_placed'] = True
+            except Exception as e:
+                self.logger.error(f"Failed to place SL: {e}")
+        elif tracked_trade and not update_needed['update_sl']:
+            # Keep existing SL
+            result['sl_oid'] = tracked_trade.get('sl_oid')
+        
+        return result
+
     async def _main_loop(self):
-        """Main trading loop - PATCHED v3"""
+        """Main trading loop"""
         try:
             while self.is_running:
                 self.invocation_count += 1
                 self.state.invocation_count = self.invocation_count
 
                 try:
-                    # ===== CHECK FOR TOO MANY RATE LIMIT ERRORS =====
+                    # Check for too many rate limit errors
                     if self._consecutive_429s >= self._max_consecutive_429s:
-                        self.logger.warning(f"⏸️ Too many rate limit errors ({self._consecutive_429s}). Waiting 60s before retry...")
+                        self.logger.warning(f"⏸️ Too many rate limit errors ({self._consecutive_429s}). Waiting 60s...")
                         await asyncio.sleep(60)
                         self._consecutive_429s = 0
                         continue
 
                     # ===== PHASE 1: Fetch Account State =====
-                    await asyncio.sleep(2)  # Rate limit protection - increased for testnet
+                    await asyncio.sleep(2)
                     state = await self.hyperliquid.get_user_state()
                     balance = state['balance']
                     total_value = state['total_value']
@@ -797,8 +928,6 @@ class TradingBotEngine:
                         total_return_pct = 0.0
 
                     sharpe_ratio = self._calculate_sharpe(self.trade_log)
-                    
-                    self.logger.debug(f"  Balance: ${balance:,.2f} | Return: {total_return_pct:+.2f}% | Sharpe: {sharpe_ratio:.2f}")
 
                     self.state.balance = balance
                     self.state.total_value = total_value
@@ -833,7 +962,7 @@ class TradingBotEngine:
                     recent_diary = self._load_recent_diary(limit=10)
 
                     # ===== PHASE 4: Fetch Open Orders =====
-                    await asyncio.sleep(1)  # Rate limit protection
+                    await asyncio.sleep(1)
                     open_orders_raw = await self.hyperliquid.get_open_orders()
                     open_orders = []
                     for o in open_orders_raw:
@@ -863,7 +992,7 @@ class TradingBotEngine:
                     await self._reconcile_active_trades(state['positions'], open_orders_raw)
 
                     # ===== PHASE 6: Fetch Recent Fills =====
-                    await asyncio.sleep(1)  # Rate limit protection
+                    await asyncio.sleep(1)
                     fills_raw = await self.hyperliquid.get_recent_fills(limit=50)
                     recent_fills = []
                     for fill in fills_raw[-20:]:
@@ -966,7 +1095,6 @@ class TradingBotEngine:
                             self.logger.error(f"Error gathering market data for {asset}: {e}")
 
                     # ===== PHASE 8.5: PRE-DECISION SYNC =====
-                    # CRITICAL: If sync fails, SKIP trading this iteration
                     sync_state = await self._sync_exchange_state()
                     
                     if sync_state is None:
@@ -976,13 +1104,11 @@ class TradingBotEngine:
                         await asyncio.sleep(self._get_interval_seconds())
                         continue
                     
-                    # Update with fresh data
                     dashboard['positions'] = sync_state['positions']
                     dashboard['account_value'] = sync_state['total_value']
                     dashboard['balance'] = sync_state['balance']
                     dashboard['open_orders'] = sync_state['open_orders']
                     
-                    # Reconcile
                     closed_by_exchange = await self._reconcile_pre_decision(
                         sync_state['positions_raw'], 
                         sync_state['open_orders_raw']
@@ -1001,7 +1127,7 @@ class TradingBotEngine:
                     self.state.balance = sync_state['balance']
                     self.state.total_value = sync_state['total_value']
                     self.state.open_orders = sync_state['open_orders']
-                    self.state.error = None  # Clear error on successful sync
+                    self.state.error = None
 
                     # ===== PHASE 8.7: Enhanced Analysis =====
                     self.logger.info("Building enhanced market analysis...")
@@ -1042,11 +1168,6 @@ class TradingBotEngine:
                             section["enhanced_analysis"] = enhanced["prompt_text"]
                             section["composite_signal"] = enhanced["composite_signal"]
                             section["composite_confidence"] = enhanced["confidence"]
-                            
-                            self.logger.info(
-                                f"Enhanced {asset}: {enhanced['composite_signal']} "
-                                f"(conf: {enhanced['confidence']}%)"
-                            )
                             
                         except Exception as e:
                             self.logger.warning(f"Enhanced analysis failed for {asset}: {e}")
@@ -1132,9 +1253,9 @@ class TradingBotEngine:
                                     size = allocation / current_price if current_price > 0 else 0
                                     
                                     # Validate TP/SL
-                                    validation = self._validate_tp_sl(action, current_price, tp_price, sl_price)
+                                    validation = self._validate_tp_sl(asset, action, current_price, tp_price, sl_price)
                                     for warning in validation['warnings']:
-                                        self.logger.warning(f"⚠️ TP/SL VALIDATION: {warning}")
+                                        self.logger.warning(f"⚠️ {warning}")
                                     
                                     risk_reward = None
                                     if validation['tp_price'] and validation['sl_price'] and current_price:
@@ -1162,7 +1283,7 @@ class TradingBotEngine:
                                     )
                                     
                                     self.pending_proposals.append(proposal)
-                                    self.logger.info(f"[PROPOSAL] Created: {action.upper()} {asset} @ ${current_price:,.2f} (ID: {proposal.id[:8]})")
+                                    self.logger.info(f"[PROPOSAL] Created: {action.upper()} {asset} @ ${current_price:,.2f}")
                                     
                                     self.state.pending_proposals = [p.to_dict() for p in self.pending_proposals if p.is_pending]
                                     
@@ -1195,9 +1316,9 @@ class TradingBotEngine:
                                         self.logger.info(f"📐 Using actual position size for close: {amount}")
 
                                 # ===== VALIDATE TP/SL =====
-                                validation = self._validate_tp_sl(action, current_price, tp_price, sl_price)
+                                validation = self._validate_tp_sl(asset, action, current_price, tp_price, sl_price)
                                 for warning in validation['warnings']:
-                                    self.logger.warning(f"⚠️ TP/SL VALIDATION: {warning}")
+                                    self.logger.warning(f"⚠️ {warning}")
                                 tp_price = validation['tp_price']
                                 sl_price = validation['sl_price']
 
@@ -1215,7 +1336,7 @@ class TradingBotEngine:
                                     verified = await self._verify_post_trade(asset, expected_side, amount)
                                     
                                     if not verified:
-                                        self.logger.warning(f"⚠️ Trade verification failed for {asset} - checking state")
+                                        self.logger.warning(f"⚠️ Trade verification failed for {asset}")
                                         real_pos = await self._get_real_position(asset)
                                         if real_pos:
                                             amount = real_pos['size']
@@ -1232,82 +1353,24 @@ class TradingBotEngine:
                                         for f in recent_fills_check
                                     )
 
-                                    # CANCEL EXISTING ORDERS
-                                    try:
-                                        existing_orders = await self.hyperliquid.get_open_orders()
-                                        for order in existing_orders:
-                                            if order.get('coin') == asset:
-                                                oid = order.get('oid')
-                                                if oid:
-                                                    await asyncio.sleep(0.3)
-                                                    await self.hyperliquid.cancel_order(asset, oid)
-                                                    self.logger.info(f"🧹 Cancelled existing order for {asset} before placing new TP/SL")
-                                    except Exception as e:
-                                        self.logger.warning(f"Failed to cancel existing orders: {e}")
-
-                                    tp_oid = None
-                                    sl_oid = None
-
-                                    if tp_price:
-                                        try:
-                                            is_buy = (action == 'buy')
-                                            await asyncio.sleep(0.3)
-                                            tp_result = await self.hyperliquid.place_take_profit(
-                                                asset, is_buy, amount, tp_price
-                                            )
-                                            # V4: Check structured response
-                                            if isinstance(tp_result, dict) and tp_result.get('success'):
-                                                tp_oid = tp_result.get('oid')
-                                                self.logger.info(f"✅ Placed TP order for {asset} @ {tp_price} (oid: {tp_oid})")
-                                            elif isinstance(tp_result, dict):
-                                                self.logger.error(f"❌ TP order REJECTED for {asset}: {tp_result.get('error', 'unknown')}")
-                                                tp_oid = None
-                                            else:
-                                                # Fallback for old API format
-                                                oids = self.hyperliquid.extract_oids(tp_result)
-                                                tp_oid = oids[0] if oids else None
-                                                if tp_oid:
-                                                    self.logger.info(f"✅ Placed TP order for {asset} @ {tp_price}")
-                                                else:
-                                                    self.logger.warning(f"⚠️ TP order for {asset} - no OID returned")
-                                        except Exception as e:
-                                            self.logger.error(f"Failed to place TP: {e}")
-
-                                    if sl_price:
-                                        try:
-                                            is_buy = (action == 'buy')
-                                            await asyncio.sleep(0.3)
-                                            sl_result = await self.hyperliquid.place_stop_loss(
-                                                asset, is_buy, amount, sl_price
-                                            )
-                                            # V4: Check structured response
-                                            if isinstance(sl_result, dict) and sl_result.get('success'):
-                                                sl_oid = sl_result.get('oid')
-                                                self.logger.info(f"✅ Placed SL order for {asset} @ {sl_price} (oid: {sl_oid})")
-                                            elif isinstance(sl_result, dict):
-                                                self.logger.error(f"❌ SL order REJECTED for {asset}: {sl_result.get('error', 'unknown')}")
-                                                sl_oid = None
-                                            else:
-                                                # Fallback for old API format
-                                                oids = self.hyperliquid.extract_oids(sl_result)
-                                                sl_oid = oids[0] if oids else None
-                                                if sl_oid:
-                                                    self.logger.info(f"✅ Placed SL order for {asset} @ {sl_price}")
-                                                else:
-                                                    self.logger.warning(f"⚠️ SL order for {asset} - no OID returned")
-                                        except Exception as e:
-                                            self.logger.error(f"Failed to place SL: {e}")
+                                    # Place TP/SL orders
+                                    is_long = (action == 'buy')
+                                    tpsl_result = await self._place_tpsl_orders(
+                                        asset, is_long, amount, tp_price, sl_price
+                                    )
 
                                     self.active_trades = [
                                         t for t in self.active_trades if t['asset'] != asset
                                     ]
                                     self.active_trades.append({
                                         'asset': asset,
-                                        'is_long': (action == 'buy'),
+                                        'is_long': is_long,
                                         'amount': amount,
                                         'entry_price': current_price,
-                                        'tp_oid': tp_oid,
-                                        'sl_oid': sl_oid,
+                                        'tp_oid': tpsl_result['tp_oid'],
+                                        'sl_oid': tpsl_result['sl_oid'],
+                                        'tp_price': tp_price,
+                                        'sl_price': sl_price,
                                         'exit_plan': exit_plan,
                                         'opened_at': datetime.now(UTC).isoformat()
                                     })
@@ -1318,16 +1381,14 @@ class TradingBotEngine:
                                         'action': action,
                                         'allocation_usd': allocation,
                                         'amount': amount,
-                                        'size': amount,
                                         'entry_price': current_price,
                                         'tp_price': tp_price,
-                                        'tp_oid': tp_oid,
+                                        'tp_oid': tpsl_result['tp_oid'],
                                         'sl_price': sl_price,
-                                        'sl_oid': sl_oid,
+                                        'sl_oid': tpsl_result['sl_oid'],
                                         'exit_plan': exit_plan,
                                         'rationale': rationale,
                                         'order_result': str(order_result),
-                                        'opened_at': datetime.now(UTC).isoformat(),
                                         'filled': filled
                                     })
                                     
@@ -1358,7 +1419,6 @@ class TradingBotEngine:
                                         self.state.positions = post_positions
                                         self.state.balance = post_trade_state['balance']
                                         self.state.total_value = post_trade_state['total_value']
-                                        self.logger.info(f"📊 POST-TRADE SYNC: Updated state with {len(post_positions)} positions")
                                     except Exception as e:
                                         self.logger.warning(f"Post-trade state sync failed: {e}")
 
@@ -1379,118 +1439,53 @@ class TradingBotEngine:
                         elif action == 'hold':
                             self.logger.info(f"{asset}: HOLD - {rationale}")
                             
-                            # ===== NEW: Set/Update TP/SL on HOLD if position exists =====
+                            # ===== Update TP/SL on HOLD if needed (with churn reduction) =====
                             tracked_trade = next((t for t in self.active_trades if t['asset'] == asset), None)
                             
                             if tracked_trade and (tp_price or sl_price):
                                 try:
-                                    # ===== CRITICAL: Verify position still exists before placing TP/SL =====
+                                    # Verify position still exists
                                     real_pos = await self._get_real_position(asset)
                                     if not real_pos:
-                                        self.logger.warning(f"⚠️ Position for {asset} no longer exists! Removing from tracking.")
+                                        self.logger.warning(f"⚠️ Position for {asset} no longer exists!")
                                         self.active_trades = [t for t in self.active_trades if t['asset'] != asset]
-                                        self._write_diary_entry({
-                                            'timestamp': datetime.now(UTC).isoformat(),
-                                            'asset': asset,
-                                            'action': 'hold_position_closed',
-                                            'note': 'Position was closed (likely by TP/SL) before HOLD update'
-                                        })
-                                        continue  # Skip to next asset
+                                        continue
                                     
                                     await asyncio.sleep(0.3)
                                     current_price = await self.hyperliquid.get_current_price(asset)
                                     is_long = tracked_trade.get('is_long', True)
-                                    amount = tracked_trade.get('amount', 0)
+                                    amount = real_pos['size']
                                     
-                                    # Update amount from actual position if different
-                                    if abs(amount - real_pos['size']) > 0.0001:
-                                        self.logger.info(f"📐 Updating {asset} size from {amount} to {real_pos['size']}")
-                                        amount = real_pos['size']
+                                    # Update amount if different
+                                    if abs(tracked_trade.get('amount', 0) - amount) > 0.0001:
                                         tracked_trade['amount'] = amount
                                     
                                     # Validate TP/SL
                                     action_for_validation = 'buy' if is_long else 'sell'
-                                    validation = self._validate_tp_sl(action_for_validation, current_price, tp_price, sl_price)
+                                    validation = self._validate_tp_sl(asset, action_for_validation, current_price, tp_price, sl_price)
                                     for warning in validation['warnings']:
-                                        self.logger.warning(f"⚠️ TP/SL VALIDATION (HOLD): {warning}")
+                                        self.logger.warning(f"⚠️ {warning}")
                                     
                                     validated_tp = validation['tp_price']
                                     validated_sl = validation['sl_price']
                                     
-                                    if validated_tp or validated_sl:
-                                        self.logger.info(f"📝 HOLD with TP/SL update for {asset}: TP={validated_tp}, SL={validated_sl}")
-                                        
-                                        # Cancel existing TP/SL orders first
-                                        try:
-                                            existing_orders = await self.hyperliquid.get_open_orders()
-                                            for order in existing_orders:
-                                                if order.get('coin') == asset:
-                                                    oid = order.get('oid')
-                                                    if oid:
-                                                        await asyncio.sleep(0.3)
-                                                        await self.hyperliquid.cancel_order(asset, oid)
-                                                        self.logger.info(f"🧹 Cancelled existing order for {asset}")
-                                        except Exception as e:
-                                            self.logger.warning(f"Failed to cancel existing orders: {e}")
-                                        
-                                        # Place new TP if valid
-                                        tp_oid = None
-                                        if validated_tp:
-                                            try:
-                                                await asyncio.sleep(0.3)
-                                                tp_result = await self.hyperliquid.place_take_profit(
-                                                    asset, is_long, amount, validated_tp
-                                                )
-                                                # V4: Check structured response
-                                                if isinstance(tp_result, dict) and tp_result.get('success'):
-                                                    tp_oid = tp_result.get('oid')
-                                                    self.logger.info(f"✅ Placed TP order for {asset} @ {validated_tp} (oid: {tp_oid})")
-                                                elif isinstance(tp_result, dict):
-                                                    self.logger.error(f"❌ TP order REJECTED for {asset}: {tp_result.get('error', 'unknown')}")
-                                                    tp_oid = None
-                                                else:
-                                                    # Fallback for old API format
-                                                    oids = self.hyperliquid.extract_oids(tp_result)
-                                                    tp_oid = oids[0] if oids else None
-                                                    if tp_oid:
-                                                        self.logger.info(f"✅ Placed TP order for {asset} @ {validated_tp}")
-                                                    else:
-                                                        self.logger.warning(f"⚠️ TP order for {asset} - no OID returned")
-                                            except Exception as e:
-                                                self.logger.error(f"Failed to place TP: {e}")
-                                        
-                                        # Place new SL if valid
-                                        sl_oid = None
-                                        if validated_sl:
-                                            try:
-                                                await asyncio.sleep(0.3)
-                                                sl_result = await self.hyperliquid.place_stop_loss(
-                                                    asset, is_long, amount, validated_sl
-                                                )
-                                                # V4: Check structured response
-                                                if isinstance(sl_result, dict) and sl_result.get('success'):
-                                                    sl_oid = sl_result.get('oid')
-                                                    self.logger.info(f"✅ Placed SL order for {asset} @ {validated_sl} (oid: {sl_oid})")
-                                                elif isinstance(sl_result, dict):
-                                                    self.logger.error(f"❌ SL order REJECTED for {asset}: {sl_result.get('error', 'unknown')}")
-                                                    sl_oid = None
-                                                else:
-                                                    # Fallback for old API format
-                                                    oids = self.hyperliquid.extract_oids(sl_result)
-                                                    sl_oid = oids[0] if oids else None
-                                                    if sl_oid:
-                                                        self.logger.info(f"✅ Placed SL order for {asset} @ {validated_sl}")
-                                                    else:
-                                                        self.logger.warning(f"⚠️ SL order for {asset} - no OID returned")
-                                            except Exception as e:
-                                                self.logger.error(f"Failed to place SL: {e}")
+                                    # Check if update is actually needed
+                                    update_check = self._should_update_tpsl(tracked_trade, validated_tp, validated_sl)
+                                    
+                                    if update_check['update_tp'] or update_check['update_sl']:
+                                        tpsl_result = await self._place_tpsl_orders(
+                                            asset, is_long, amount, 
+                                            validated_tp if update_check['update_tp'] else None,
+                                            validated_sl if update_check['update_sl'] else None,
+                                            tracked_trade
+                                        )
                                         
                                         # Update tracked trade
-                                        if tp_oid:
-                                            tracked_trade['tp_oid'] = tp_oid
+                                        if tpsl_result['tp_oid']:
+                                            tracked_trade['tp_oid'] = tpsl_result['tp_oid']
                                             tracked_trade['tp_price'] = validated_tp
-                                        if sl_oid:
-                                            tracked_trade['sl_oid'] = sl_oid
+                                        if tpsl_result['sl_oid']:
+                                            tracked_trade['sl_oid'] = tpsl_result['sl_oid']
                                             tracked_trade['sl_price'] = validated_sl
                                         
                                         self._write_diary_entry({
@@ -1498,11 +1493,13 @@ class TradingBotEngine:
                                             'asset': asset,
                                             'action': 'hold_update_tpsl',
                                             'tp_price': validated_tp,
-                                            'tp_oid': tp_oid,
+                                            'tp_oid': tpsl_result['tp_oid'],
                                             'sl_price': validated_sl,
-                                            'sl_oid': sl_oid,
+                                            'sl_oid': tpsl_result['sl_oid'],
                                             'rationale': rationale
                                         })
+                                    else:
+                                        self.logger.info(f"📊 {asset}: TP/SL unchanged, skipping update (churn reduction)")
                                         
                                 except Exception as e:
                                     self.logger.error(f"Error updating TP/SL on HOLD for {asset}: {e}")
@@ -1677,7 +1674,7 @@ class TradingBotEngine:
             return False
         
         proposal.approve()
-        self.logger.info(f"[APPROVED] Proposal: {proposal.action.upper()} {proposal.asset} (ID: {proposal_id[:8]})")
+        self.logger.info(f"[APPROVED] Proposal: {proposal.action.upper()} {proposal.asset}")
         
         asyncio.create_task(self._execute_proposal(proposal))
         
@@ -1695,7 +1692,7 @@ class TradingBotEngine:
             return False
         
         proposal.reject(reason or "Rejected by user")
-        self.logger.info(f"[REJECTED] Proposal: {proposal.action.upper()} {proposal.asset} (ID: {proposal_id[:8]})")
+        self.logger.info(f"[REJECTED] Proposal: {proposal.action.upper()} {proposal.asset}")
         
         self._write_diary_entry({
             'timestamp': datetime.now(UTC).isoformat(),
@@ -1719,7 +1716,7 @@ class TradingBotEngine:
             pre_check = await self._verify_position_before_trade(proposal.asset, proposal.action)
             
             if not pre_check['should_execute']:
-                self.logger.warning(f"⏭️ SKIPPING proposal {proposal.id[:8]}: {pre_check['warning']}")
+                self.logger.warning(f"⏭️ SKIPPING proposal: {pre_check['warning']}")
                 proposal.mark_failed(pre_check['warning'])
                 return
             
@@ -1731,9 +1728,9 @@ class TradingBotEngine:
                 raise ValueError(f"Invalid amount: {amount}")
             
             # Validate TP/SL
-            validation = self._validate_tp_sl(proposal.action, current_price, proposal.tp_price, proposal.sl_price)
+            validation = self._validate_tp_sl(proposal.asset, proposal.action, current_price, proposal.tp_price, proposal.sl_price)
             for warning in validation['warnings']:
-                self.logger.warning(f"⚠️ TP/SL VALIDATION: {warning}")
+                self.logger.warning(f"⚠️ {warning}")
             
             await asyncio.sleep(0.3)
             if proposal.action == 'buy':
@@ -1748,88 +1745,25 @@ class TradingBotEngine:
             expected_side = 'long' if proposal.action == 'buy' else 'short'
             await self._verify_post_trade(proposal.asset, expected_side, amount)
             
-            await asyncio.sleep(1)
-            recent_fills = await self.hyperliquid.get_recent_fills(limit=5)
-            filled = any(
-                f.get('coin') == proposal.asset and
-                abs(float(f.get('sz', 0)) - amount) < 0.0001
-                for f in recent_fills
+            # Place TP/SL orders
+            is_long = (proposal.action == 'buy')
+            tpsl_result = await self._place_tpsl_orders(
+                proposal.asset, is_long, amount, 
+                validation['tp_price'], validation['sl_price']
             )
-            
-            try:
-                existing_orders = await self.hyperliquid.get_open_orders()
-                for order in existing_orders:
-                    if order.get('coin') == proposal.asset:
-                        oid = order.get('oid')
-                        if oid:
-                            await asyncio.sleep(0.3)
-                            await self.hyperliquid.cancel_order(proposal.asset, oid)
-            except Exception as e:
-                self.logger.warning(f"Failed to cancel existing orders: {e}")
-            
-            tp_oid = None
-            sl_oid = None
-            
-            if validation['tp_price']:
-                try:
-                    is_buy = (proposal.action == 'buy')
-                    await asyncio.sleep(0.3)
-                    tp_result = await self.hyperliquid.place_take_profit(
-                        proposal.asset, is_buy, amount, validation['tp_price']
-                    )
-                    # V4: Check structured response
-                    if isinstance(tp_result, dict) and tp_result.get('success'):
-                        tp_oid = tp_result.get('oid')
-                        self.logger.info(f"✅ Placed TP order @ {validation['tp_price']} (oid: {tp_oid})")
-                    elif isinstance(tp_result, dict):
-                        self.logger.error(f"❌ TP order REJECTED: {tp_result.get('error', 'unknown')}")
-                        tp_oid = None
-                    else:
-                        # Fallback for old API format
-                        oids = self.hyperliquid.extract_oids(tp_result)
-                        tp_oid = oids[0] if oids else None
-                        if tp_oid:
-                            self.logger.info(f"✅ Placed TP order @ {validation['tp_price']}")
-                        else:
-                            self.logger.warning(f"⚠️ TP order - no OID returned")
-                except Exception as e:
-                    self.logger.error(f"Failed to place TP: {e}")
-            
-            if validation['sl_price']:
-                try:
-                    is_buy = (proposal.action == 'buy')
-                    await asyncio.sleep(0.3)
-                    sl_result = await self.hyperliquid.place_stop_loss(
-                        proposal.asset, is_buy, amount, validation['sl_price']
-                    )
-                    # V4: Check structured response
-                    if isinstance(sl_result, dict) and sl_result.get('success'):
-                        sl_oid = sl_result.get('oid')
-                        self.logger.info(f"✅ Placed SL order @ {validation['sl_price']} (oid: {sl_oid})")
-                    elif isinstance(sl_result, dict):
-                        self.logger.error(f"❌ SL order REJECTED: {sl_result.get('error', 'unknown')}")
-                        sl_oid = None
-                    else:
-                        # Fallback for old API format
-                        oids = self.hyperliquid.extract_oids(sl_result)
-                        sl_oid = oids[0] if oids else None
-                        if sl_oid:
-                            self.logger.info(f"✅ Placed SL order @ {validation['sl_price']}")
-                        else:
-                            self.logger.warning(f"⚠️ SL order - no OID returned")
-                except Exception as e:
-                    self.logger.error(f"Failed to place SL: {e}")
             
             self.active_trades = [
                 t for t in self.active_trades if t['asset'] != proposal.asset
             ]
             self.active_trades.append({
                 'asset': proposal.asset,
-                'is_long': (proposal.action == 'buy'),
+                'is_long': is_long,
                 'amount': amount,
                 'entry_price': current_price,
-                'tp_oid': tp_oid,
-                'sl_oid': sl_oid,
+                'tp_oid': tpsl_result['tp_oid'],
+                'sl_oid': tpsl_result['sl_oid'],
+                'tp_price': validation['tp_price'],
+                'sl_price': validation['sl_price'],
                 'exit_plan': proposal.market_conditions.get('exit_plan', ''),
                 'opened_at': datetime.now(UTC).isoformat(),
                 'from_proposal': proposal.id
@@ -1845,12 +1779,11 @@ class TradingBotEngine:
                 'amount': amount,
                 'entry_price': current_price,
                 'tp_price': validation['tp_price'],
-                'tp_oid': tp_oid,
+                'tp_oid': tpsl_result['tp_oid'],
                 'sl_price': validation['sl_price'],
-                'sl_oid': sl_oid,
+                'sl_oid': tpsl_result['sl_oid'],
                 'rationale': proposal.rationale,
                 'order_result': str(order_result),
-                'filled': filled,
                 'from_proposal': proposal.id,
                 'approved_manually': True
             })
