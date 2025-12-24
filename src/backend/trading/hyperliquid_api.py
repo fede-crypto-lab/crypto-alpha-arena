@@ -26,6 +26,7 @@ from src.backend.config_loader import CONFIG
 from hyperliquid.exchange import Exchange
 from hyperliquid.info import Info
 from hyperliquid.utils import constants  # For MAINNET/TESTNET
+from hyperliquid.utils.error import ServerError  # For handling 502 errors
 from eth_account import Account as _Account
 from eth_account.signers.local import LocalAccount
 from websocket._exceptions import WebSocketConnectionClosedException
@@ -181,6 +182,23 @@ class HyperliquidAPI:
                 if to_thread:
                     return await asyncio.to_thread(fn, *args, **kwargs)
                 return await fn(*args, **kwargs)
+            except ServerError as e:
+                # Hyperliquid SDK ServerError (includes 502, 503, etc.)
+                last_err = e
+                status_code = e.args[0] if e.args else 0
+                error_msg = e.args[1] if len(e.args) > 1 else str(e)
+
+                # More aggressive backoff for 5xx errors
+                wait_time = backoff_base * (3 ** attempt)  # 0.5, 1.5, 4.5 seconds
+                logging.warning(
+                    "⚠️ Hyperliquid ServerError %s (attempt %s/%s): %s. Waiting %.1fs...",
+                    status_code, attempt + 1, max_attempts, error_msg[:100], wait_time
+                )
+
+                if reset_on_fail:
+                    self._reset_clients()
+                await asyncio.sleep(wait_time)
+                continue
             except (WebSocketConnectionClosedException, aiohttp.ClientError, ConnectionError, TimeoutError, socket.timeout) as e:
                 last_err = e
                 logging.warning("HL call failed (attempt %s/%s): %s", attempt + 1, max_attempts, e)

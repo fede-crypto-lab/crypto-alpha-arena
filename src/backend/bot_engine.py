@@ -64,6 +64,10 @@ class TradingBotEngine:
     # Minimum price change to trigger TP/SL update (avoid churn)
     MIN_PRICE_CHANGE_PCT = 0.5  # Only update if price changed by 0.5%+
 
+    # Default TP/SL distances when LLM fails (as percentage of price)
+    DEFAULT_TP_DISTANCE_PCT = 2.0   # 2% profit target
+    DEFAULT_SL_DISTANCE_PCT = 1.5   # 1.5% stop loss
+
     def __init__(
         self,
         assets: List[str],
@@ -363,9 +367,53 @@ class TradingBotEngine:
         self.logger.info("Bot stopped")
         self._notify_state_update()
 
+    def _generate_fallback_tpsl(self, asset: str, action: str, current_price: float,
+                                 atr: Optional[float] = None) -> Dict[str, float]:
+        """Generate sensible TP/SL prices when LLM provides invalid values.
+
+        Uses ATR if available, otherwise uses default percentages.
+
+        Args:
+            asset: Asset symbol
+            action: 'buy' or 'sell'
+            current_price: Current market price
+            atr: Average True Range (optional, for volatility-based calculation)
+
+        Returns:
+            Dict with 'tp_price' and 'sl_price'
+        """
+        # Use ATR-based calculation if available (1.5x ATR for TP, 1x ATR for SL)
+        if atr and atr > 0:
+            tp_distance = atr * 1.5
+            sl_distance = atr * 1.0
+        else:
+            # Fallback to percentage-based
+            tp_distance = current_price * (self.DEFAULT_TP_DISTANCE_PCT / 100)
+            sl_distance = current_price * (self.DEFAULT_SL_DISTANCE_PCT / 100)
+
+        if action == 'buy':
+            # LONG: TP above, SL below
+            tp_price = current_price + tp_distance
+            sl_price = current_price - sl_distance
+        else:
+            # SHORT: TP below, SL above
+            tp_price = current_price - tp_distance
+            sl_price = current_price + sl_distance
+
+        # Round to tick size
+        tp_price = self.hyperliquid.round_price(asset, tp_price)
+        sl_price = self.hyperliquid.round_price(asset, sl_price)
+
+        self.logger.info(f"📊 Generated fallback TP/SL for {asset} {action.upper()}: "
+                        f"TP=${tp_price:,.2f}, SL=${sl_price:,.2f} "
+                        f"(ATR={atr:.2f if atr else 'N/A'})")
+
+        return {'tp_price': tp_price, 'sl_price': sl_price}
+
     # ===== IMPROVED: TP/SL VALIDATION WITH STRICTER LIMITS =====
-    def _validate_tp_sl(self, asset: str, action: str, current_price: float, 
-                        tp_price: Optional[float], sl_price: Optional[float]) -> Dict[str, Any]:
+    def _validate_tp_sl(self, asset: str, action: str, current_price: float,
+                        tp_price: Optional[float], sl_price: Optional[float],
+                        atr: Optional[float] = None) -> Dict[str, Any]:
         """
         Validate and fix TP/SL prices with strict limits.
         
@@ -428,17 +476,39 @@ class TradingBotEngine:
         
         if validated_sl is not None:
             sl_distance_pct = abs(validated_sl - current_price) / current_price * 100
-            
+
             if sl_distance_pct > self.MAX_SL_DISTANCE_PCT:
                 warnings.append(f"❌ SL distance {sl_distance_pct:.1f}% > {self.MAX_SL_DISTANCE_PCT}% limit - INVALID")
                 validated_sl = None
             elif sl_distance_pct < self.MIN_SL_DISTANCE_PCT:
                 warnings.append(f"⚠️ SL distance {sl_distance_pct:.2f}% < {self.MIN_SL_DISTANCE_PCT}% - very tight stop")
-        
+
+        # ===== STEP 4: Generate fallback values if both TP and SL are invalid =====
+        used_fallback = False
+        if validated_tp is None and validated_sl is None:
+            warnings.append("⚠️ Both TP and SL invalid - generating fallback values")
+            fallback = self._generate_fallback_tpsl(asset, action, current_price, atr)
+            validated_tp = fallback['tp_price']
+            validated_sl = fallback['sl_price']
+            used_fallback = True
+        elif validated_tp is None:
+            # Generate only TP fallback
+            warnings.append("⚠️ TP invalid - generating fallback TP")
+            fallback = self._generate_fallback_tpsl(asset, action, current_price, atr)
+            validated_tp = fallback['tp_price']
+            used_fallback = True
+        elif validated_sl is None:
+            # Generate only SL fallback
+            warnings.append("⚠️ SL invalid - generating fallback SL")
+            fallback = self._generate_fallback_tpsl(asset, action, current_price, atr)
+            validated_sl = fallback['sl_price']
+            used_fallback = True
+
         return {
             'tp_price': validated_tp,
             'sl_price': validated_sl,
-            'warnings': warnings
+            'warnings': warnings,
+            'used_fallback': used_fallback
         }
 
     def _should_update_tpsl(self, tracked_trade: Dict, new_tp: Optional[float], 
@@ -785,33 +855,51 @@ class TradingBotEngine:
         
         return result
 
-    async def _verify_post_trade(self, asset: str, expected_side: str, expected_size: float) -> bool:
-        """Verify trade execution after placing orders."""
+    async def _verify_post_trade(self, asset: str, expected_side: str, expected_size: float) -> Dict[str, Any]:
+        """Verify trade execution after placing orders.
+
+        Returns:
+            Dict with 'verified' (bool), 'actual_size' (float), 'actual_side' (str)
+        """
+        result = {
+            'verified': False,
+            'actual_size': expected_size,  # Default to expected if verification fails
+            'actual_side': expected_side
+        }
+
         try:
             await asyncio.sleep(1)
             state = await self.hyperliquid.get_user_state()
-            
+
             for pos in state['positions']:
                 if pos.get('coin') == asset:
                     actual_size = float(pos.get('szi', 0) or 0)
                     actual_side = 'long' if actual_size > 0 else 'short'
-                    
+
+                    result['actual_size'] = abs(actual_size)
+                    result['actual_side'] = actual_side
+
                     size_match = abs(abs(actual_size) - expected_size) < 0.0001
                     side_match = actual_side == expected_side
-                    
+
                     if size_match and side_match:
                         self.logger.info(f"✅ POST-TRADE VERIFY: {asset} position confirmed ({actual_side} {abs(actual_size)})")
-                        return True
+                        result['verified'] = True
                     else:
                         self.logger.warning(f"⚠️ POST-TRADE VERIFY: {asset} mismatch - expected {expected_side} {expected_size}, got {actual_side} {abs(actual_size)}")
-                        return False
-            
+                        # Still use actual values for TP/SL orders
+                        if side_match:
+                            self.logger.info(f"📊 Using actual size {abs(actual_size)} for TP/SL orders")
+                            result['verified'] = True  # Side matches, so trade is valid
+
+                    return result
+
             self.logger.warning(f"⚠️ POST-TRADE VERIFY: No position found for {asset}")
-            return False
-            
+            return result
+
         except Exception as e:
             self.logger.error(f"❌ POST-TRADE VERIFY failed: {e}")
-            return False
+            return result
 
     async def _place_tpsl_orders(self, asset: str, is_long: bool, amount: float, 
                                   tp_price: Optional[float], sl_price: Optional[float],
@@ -1331,11 +1419,11 @@ class TradingBotEngine:
 
                                     self.logger.info(f"Executed {action} {asset}: {amount:.6f} @ {current_price}")
 
-                                    # POST-TRADE VERIFICATION
+                                    # POST-TRADE VERIFICATION - get actual size from exchange
                                     expected_side = 'long' if action == 'buy' else 'short'
-                                    verified = await self._verify_post_trade(asset, expected_side, amount)
-                                    
-                                    if not verified:
+                                    verify_result = await self._verify_post_trade(asset, expected_side, amount)
+
+                                    if not verify_result['verified']:
                                         self.logger.warning(f"⚠️ Trade verification failed for {asset}")
                                         real_pos = await self._get_real_position(asset)
                                         if real_pos:
@@ -1344,6 +1432,12 @@ class TradingBotEngine:
                                         else:
                                             self.logger.error(f"❌ No position found after trade for {asset}")
                                             continue
+                                    else:
+                                        # Use actual size from exchange for TP/SL orders
+                                        actual_amount = verify_result['actual_size']
+                                        if abs(actual_amount - amount) > 0.0001:
+                                            self.logger.info(f"📊 Using actual size {actual_amount:.6f} instead of requested {amount:.6f}")
+                                            amount = actual_amount
 
                                     await asyncio.sleep(1)
                                     recent_fills_check = await self.hyperliquid.get_recent_fills(limit=5)
@@ -1353,7 +1447,7 @@ class TradingBotEngine:
                                         for f in recent_fills_check
                                     )
 
-                                    # Place TP/SL orders
+                                    # Place TP/SL orders with actual size
                                     is_long = (action == 'buy')
                                     tpsl_result = await self._place_tpsl_orders(
                                         asset, is_long, amount, tp_price, sl_price
@@ -1741,17 +1835,25 @@ class TradingBotEngine:
                 raise ValueError(f"Invalid action: {proposal.action}")
             
             self.logger.info(f"Order placed: {proposal.action} {proposal.asset}: {amount:.6f} @ {current_price}")
-            
+
+            # POST-TRADE VERIFICATION - get actual size from exchange
             expected_side = 'long' if proposal.action == 'buy' else 'short'
-            await self._verify_post_trade(proposal.asset, expected_side, amount)
-            
-            # Place TP/SL orders
+            verify_result = await self._verify_post_trade(proposal.asset, expected_side, amount)
+
+            # Use actual size from exchange for TP/SL orders
+            if verify_result['verified']:
+                actual_amount = verify_result['actual_size']
+                if abs(actual_amount - amount) > 0.0001:
+                    self.logger.info(f"📊 Using actual size {actual_amount:.6f} instead of requested {amount:.6f}")
+                    amount = actual_amount
+
+            # Place TP/SL orders with actual size
             is_long = (proposal.action == 'buy')
             tpsl_result = await self._place_tpsl_orders(
-                proposal.asset, is_long, amount, 
+                proposal.asset, is_long, amount,
                 validation['tp_price'], validation['sl_price']
             )
-            
+
             self.active_trades = [
                 t for t in self.active_trades if t['asset'] != proposal.asset
             ]

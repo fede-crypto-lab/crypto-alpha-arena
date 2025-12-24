@@ -16,9 +16,23 @@ from datetime import datetime
 class TradingAgent:
     """High-level trading agent that delegates reasoning to an LLM service."""
 
+    # Fallback models when primary model fails (402 Payment Required, rate limits, etc.)
+    # Ordered by preference: first try paid alternatives, then free models
+    FALLBACK_MODELS = [
+        "google/gemini-2.0-flash-exp:free",  # Free, fast, good quality
+        "meta-llama/llama-3.3-70b-instruct:free",  # Free, powerful
+        "qwen/qwen-2.5-72b-instruct:free",  # Free alternative
+        "mistralai/mistral-7b-instruct:free",  # Free, lightweight fallback
+    ]
+
     def __init__(self):
         """Initialize LLM configuration, metadata headers, and indicator helper."""
         self.model = CONFIG["llm_model"]
+        self._original_model = self.model  # Store original for restoration
+        self._using_fallback = False
+        self._fallback_index = 0
+        self._consecutive_payment_errors = 0
+
         self.api_key = CONFIG["openrouter_api_key"]
         base = CONFIG["openrouter_base_url"]
         self.base_url = f"{base}/chat/completions"
@@ -40,6 +54,46 @@ class TradingAgent:
         # Warn if using a model that may not support tools
         if ":free" in self.model.lower() or "deepseek" in self.model.lower():
             logging.info(f"[INFO] Using model {self.model} - dynamic tool use may not be available. Bot will work with pre-fetched indicators only.")
+
+    def _switch_to_fallback(self) -> bool:
+        """Switch to next fallback model after payment/rate limit error.
+
+        Returns:
+            True if switched to fallback, False if no more fallbacks available
+        """
+        if self._fallback_index < len(self.FALLBACK_MODELS):
+            old_model = self.model
+            self.model = self.FALLBACK_MODELS[self._fallback_index]
+            self._fallback_index += 1
+            self._using_fallback = True
+
+            # Update structured output support for new model
+            model_lower = self.model.lower()
+            if "deepseek" in model_lower:
+                self._supports_structured_output = False
+            else:
+                self._supports_structured_output = True
+
+            logging.warning(f"⚠️ FALLBACK: Switched from {old_model} to {self.model} (fallback #{self._fallback_index})")
+            return True
+        else:
+            logging.error("❌ All fallback models exhausted!")
+            return False
+
+    def _restore_original_model(self):
+        """Restore original model after successful request (for next cycle)."""
+        if self._using_fallback and self._consecutive_payment_errors == 0:
+            logging.info(f"✅ Restoring original model: {self._original_model}")
+            self.model = self._original_model
+            self._using_fallback = False
+            self._fallback_index = 0
+
+            # Re-detect structured output support
+            model_lower = self.model.lower()
+            if "deepseek" in model_lower:
+                self._supports_structured_output = False
+            else:
+                self._supports_structured_output = True
 
     def decide_trade(self, assets, context):
         """Decide for multiple assets in one call.
@@ -508,6 +562,35 @@ class TradingAgent:
                 provider = (err.get("error", {}).get("metadata", {}) or {}).get("provider_name", "")
                 error_message = err.get("error", {}).get("message", "")
 
+                # ===== 402 Payment Required / 429 Rate Limit - Switch to fallback model =====
+                if e.response.status_code in (402, 429):
+                    self._consecutive_payment_errors += 1
+                    error_type = "Payment Required" if e.response.status_code == 402 else "Rate Limited"
+                    logging.warning(f"⚠️ {error_type} (HTTP {e.response.status_code}) for model {self.model}")
+
+                    if self._switch_to_fallback():
+                        # Reset messages for fresh attempt with new model
+                        messages = [
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ]
+                        continue
+                    else:
+                        # All fallbacks exhausted - return safe HOLD
+                        logging.error(f"❌ All models exhausted after {error_type}. Returning safe HOLD.")
+                        return {
+                            "reasoning": f"{error_type} - all fallback models exhausted",
+                            "trade_decisions": [{
+                                "asset": a,
+                                "action": "hold",
+                                "allocation_usd": 0.0,
+                                "tp_price": None,
+                                "sl_price": None,
+                                "exit_plan": "",
+                                "rationale": f"{error_type} - holding for safety"
+                            } for a in assets]
+                        }
+
                 # OpenRouter: Model doesn't support tool use
                 if "no endpoints found" in error_message.lower() and "tool" in error_message.lower():
                     logging.warning(f"Model {self.model} doesn't support tool use on OpenRouter; retrying without tools.")
@@ -646,6 +729,8 @@ class TradingAgent:
                                 "exit_plan": item[5] if len(item) > 5 else "",
                                 "rationale": item[6] if len(item) > 6 else ""
                             })
+                    # Success - reset payment error counter
+                    self._consecutive_payment_errors = 0
                     return {"reasoning": reasoning_text, "trade_decisions": normalized}
 
                 # ===== FIXED: Pass reasoning to sanitizer =====
