@@ -17,12 +17,12 @@ class TradingAgent:
     """High-level trading agent that delegates reasoning to an LLM service."""
 
     # Fallback models when primary model fails (402 Payment Required, rate limits, etc.)
-    # Ordered by preference: first try paid alternatives, then free models
+    # Verified available on OpenRouter as of Dec 2025
     FALLBACK_MODELS = [
         "google/gemini-2.0-flash-exp:free",  # Free, fast, good quality
-        "meta-llama/llama-3.3-70b-instruct:free",  # Free, powerful
-        "qwen/qwen-2.5-72b-instruct:free",  # Free alternative
-        "mistralai/mistral-7b-instruct:free",  # Free, lightweight fallback
+        "meta-llama/llama-3.2-3b-instruct:free",  # Free, lightweight
+        "qwen/qwen-2-7b-instruct:free",  # Free alternative
+        "huggingfaceh4/zephyr-7b-beta:free",  # Free fallback
     ]
 
     def __init__(self):
@@ -562,10 +562,11 @@ class TradingAgent:
                 provider = (err.get("error", {}).get("metadata", {}) or {}).get("provider_name", "")
                 error_message = err.get("error", {}).get("message", "")
 
-                # ===== 402 Payment Required / 429 Rate Limit - Switch to fallback model =====
-                if e.response.status_code in (402, 429):
+                # ===== 402/429/404 - Switch to fallback model =====
+                if e.response.status_code in (402, 429, 404):
                     self._consecutive_payment_errors += 1
-                    error_type = "Payment Required" if e.response.status_code == 402 else "Rate Limited"
+                    error_types = {402: "Payment Required", 429: "Rate Limited", 404: "Model Not Found"}
+                    error_type = error_types.get(e.response.status_code, "Error")
                     logging.warning(f"⚠️ {error_type} (HTTP {e.response.status_code}) for model {self.model}")
 
                     if self._switch_to_fallback():
