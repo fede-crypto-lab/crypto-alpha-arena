@@ -19,10 +19,11 @@ class TradingAgent:
     # Fallback models when primary model fails (402 Payment Required, rate limits, etc.)
     # Verified available on OpenRouter as of Dec 2025
     FALLBACK_MODELS = [
-        "google/gemini-2.0-flash-exp:free",  # Free, fast, good quality
-        "meta-llama/llama-3.2-3b-instruct:free",  # Free, lightweight
-        "qwen/qwen-2-7b-instruct:free",  # Free alternative
-        "huggingfaceh4/zephyr-7b-beta:free",  # Free fallback
+        "google/gemini-2.0-flash-exp:free",  # Free Google model
+        "google/gemma-3n-e2b-it:free",  # Free Google Gemma
+        "qwen/qwen3-coder:free",  # Free Qwen
+        "mistralai/devstral-2512:free",  # Free Mistral
+        "nvidia/nemotron-nano-9b-v2:free",  # Free Nvidia
     ]
 
     def __init__(self):
