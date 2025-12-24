@@ -2,13 +2,18 @@
 Main GUI Application - Single Page App with internal navigation
 """
 
+import asyncio
+import logging
 from nicegui import ui
 from src.gui.components.header import create_header
 from src.gui.services.bot_service import BotService
 from src.gui.services.state_manager import StateManager
+from src.backend.config_loader import CONFIG
 
 # Import pages
 from src.gui.pages import dashboard, positions, history, market, reasoning, settings, recommendations
+
+logger = logging.getLogger(__name__)
 
 # Global services
 bot_service = BotService()
@@ -16,6 +21,9 @@ state_manager = StateManager()
 
 # Connect services
 bot_service.state_manager = state_manager
+
+# Track if autostart has been triggered
+_autostart_done = False
 
 
 def create_app():
@@ -104,6 +112,24 @@ def create_app():
     # Load default page
     with content_container:
         dashboard.create_dashboard(bot_service, state_manager)
+
+    # Auto-start bot if AUTOSTART_BOT=true (using timer to run after UI is ready)
+    async def _try_autostart():
+        global _autostart_done
+        if _autostart_done:
+            return
+        if CONFIG.get("autostart_bot") and not bot_service.is_running():
+            _autostart_done = True
+            logger.info("[AUTOSTART] AUTOSTART_BOT enabled - starting bot automatically...")
+            try:
+                await bot_service.start()
+                logger.info("[AUTOSTART] Bot started successfully")
+            except Exception as e:
+                logger.error(f"[AUTOSTART] Failed to start bot: {e}")
+
+    # Trigger autostart after 2 seconds (ensures UI is fully loaded)
+    if CONFIG.get("autostart_bot"):
+        ui.timer(2.0, _try_autostart, once=True)
 
 
 def navigate(page: str):

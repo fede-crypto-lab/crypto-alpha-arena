@@ -55,19 +55,6 @@ if __name__ in {"__main__", "__mp_main__"}:
     # Call create_app to register all pages
     create_app()
 
-    # Auto-start bot if AUTOSTART_BOT=true
-    async def on_app_startup():
-        """Called when NiceGUI app is ready"""
-        if CONFIG.get("autostart_bot"):
-            print("[INFO] AUTOSTART_BOT enabled - starting bot automatically...")
-            try:
-                await bot_service.start()
-                print("[INFO] Bot auto-started successfully")
-            except Exception as e:
-                print(f"[ERROR] Failed to auto-start bot: {e}")
-
-    app.on_startup(on_app_startup)
-
     # Register shutdown handler with NiceGUI app
     async def on_app_shutdown():
         """Called when NiceGUI app is shutting down"""
