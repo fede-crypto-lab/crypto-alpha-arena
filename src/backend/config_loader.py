@@ -82,6 +82,8 @@ def _get_list(name: str, default: list[str] | None = None) -> list[str] | None:
 
 
 CONFIG = {
+    # Bot behavior
+    "autostart_bot": _get_bool("AUTOSTART_BOT", False),  # Auto-start bot on deploy
     # API keys - not required during module import (checked when bot starts)
     "taapi_api_key": _get_env("TAAPI_API_KEY"),
     "hyperliquid_private_key": _get_env("HYPERLIQUID_PRIVATE_KEY") or _get_env("LIGHTER_PRIVATE_KEY"),
