@@ -1408,7 +1408,9 @@ class TradingBotEngine:
                     if reasoning:
                         self.logger.info(f"LLM Reasoning: {reasoning[:200]}...")
 
-                    self.state.last_reasoning = decisions
+                    # Truncate to avoid WebSocket payload too large
+                    truncated = {"reasoning": reasoning[:500] if reasoning else "", "trade_decisions": decisions.get("trade_decisions", [])}
+                    self.state.last_reasoning = truncated
 
                     # ===== PHASE 11: Execute Trades =====
                     for decision in trade_decisions:
