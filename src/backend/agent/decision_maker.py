@@ -52,9 +52,12 @@ class TradingAgent:
         else:
             self._supports_structured_output = True
 
-        # Warn if using a model that may not support tools
+        # Check if model supports tool use (free models typically don't)
         if ":free" in self.model.lower() or "deepseek" in self.model.lower():
-            logging.info(f"[INFO] Using model {self.model} - dynamic tool use may not be available. Bot will work with pre-fetched indicators only.")
+            self._supports_tools = False
+            logging.info(f"[INFO] Using model {self.model} - dynamic tool use disabled. Bot will work with pre-fetched indicators only.")
+        else:
+            self._supports_tools = True
 
     def _switch_to_fallback(self) -> bool:
         """Switch to next fallback model after payment/rate limit error.
@@ -68,12 +71,16 @@ class TradingAgent:
             self._fallback_index += 1
             self._using_fallback = True
 
-            # Update structured output support for new model
+            # Free models typically don't support structured outputs or tool use
+            # Disable both to maximize compatibility
             model_lower = self.model.lower()
-            if "deepseek" in model_lower:
+            if ":free" in model_lower or "deepseek" in model_lower:
                 self._supports_structured_output = False
+                self._supports_tools = False
+                logging.info(f"ℹ️ Free model detected - disabled structured outputs and tool use")
             else:
                 self._supports_structured_output = True
+                self._supports_tools = True
 
             logging.warning(f"⚠️ FALLBACK: Switched from {old_model} to {self.model} (fallback #{self._fallback_index})")
             return True
@@ -475,8 +482,8 @@ class TradingAgent:
                 return {"reasoning": original_reasoning, "trade_decisions": []}
         # ===== END FIXED =====
 
-        allow_tools = True
-        # Use instance variable to determine structured output support (set in __init__)
+        # Use instance variables to determine feature support (set in __init__ or by fallback)
+        allow_tools = getattr(self, '_supports_tools', True)
         allow_structured = self._supports_structured_output
 
         def _build_schema():
