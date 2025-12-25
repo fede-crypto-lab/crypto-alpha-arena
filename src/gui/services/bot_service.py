@@ -11,7 +11,8 @@ from datetime import datetime
 
 from src.backend.bot_engine import TradingBotEngine, BotState
 from src.backend.config_loader import CONFIG
-from src.backend.indicators.market_scanner import MarketScanner, HyperliquidDataProvider, CoinOpportunity
+# Lazy import to avoid startup issues
+# from src.backend.indicators.market_scanner import MarketScanner, HyperliquidDataProvider
 
 
 class BotService:
@@ -225,6 +226,8 @@ class BotService:
 
         try:
             from src.backend.trading.hyperliquid_api import HyperliquidAPI
+            from src.backend.indicators.market_scanner import MarketScanner, HyperliquidDataProvider
+
             hyperliquid = HyperliquidAPI()
             provider = HyperliquidDataProvider(hyperliquid)
             self.scanner = MarketScanner(
