@@ -11,7 +11,7 @@ from src.gui.services.state_manager import StateManager
 from src.backend.config_loader import CONFIG
 
 # Import pages
-from src.gui.pages import dashboard, positions, history, market, reasoning, settings, recommendations
+from src.gui.pages import dashboard, positions, history, market, reasoning, settings, recommendations, scanner
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +104,7 @@ def create_app():
                 # Navigation buttons
                 menu_items = [
                     ('Dashboard', '📊 Dashboard', 'Main dashboard with metrics'),
+                    ('Scanner', '🔍 Scanner', 'Find trading opportunities'),
                     ('Recommendations', '🤖 AI Recommendations', 'Review and approve AI trade proposals'),
                     ('Positions', '💼 Positions', 'Active trading positions'),
                     ('History', '📜 History', 'Trade history and logs'),
@@ -174,6 +175,8 @@ def navigate(page: str):
     with content_container:
         if page == 'Dashboard':
             dashboard.create_dashboard(bot_service, state_manager)
+        elif page == 'Scanner':
+            scanner.create_scanner(bot_service, state_manager)
         elif page == 'Recommendations':
             recommendations.create_recommendations(bot_service, state_manager)
         elif page == 'Positions':

@@ -43,6 +43,7 @@ class BotState:
     market_data: List[Dict] = field(default_factory=list)
     pending_proposals: List[Dict] = field(default_factory=list)
     last_reasoning: Dict = field(default_factory=dict)
+    scan_results: List[Dict] = field(default_factory=list)  # Market scanner opportunities
     last_update: str = ""
     error: Optional[str] = None
     invocation_count: int = 0

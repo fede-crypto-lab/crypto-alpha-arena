@@ -11,6 +11,7 @@ from datetime import datetime
 
 from src.backend.bot_engine import TradingBotEngine, BotState
 from src.backend.config_loader import CONFIG
+from src.backend.indicators.market_scanner import MarketScanner, HyperliquidDataProvider, CoinOpportunity
 
 
 class BotService:
@@ -23,11 +24,19 @@ class BotService:
         self.recent_events: List[Dict] = []
         self.logger = logging.getLogger(__name__)
 
+        # Market scanner (initialized lazily)
+        self.scanner: Optional[MarketScanner] = None
+        self.last_scan_results: List[Dict] = []
+
         # Configuration
         self.config = {
             'assets': CONFIG.get('assets', '').split() if CONFIG.get('assets') else ['BTC', 'ETH'],
             'interval': CONFIG.get('interval', '5m'),
-            'model': CONFIG.get('llm_model', 'x-ai/grok-4')
+            'model': CONFIG.get('llm_model', 'x-ai/grok-4'),
+            # Scanner config
+            'core_coins': CONFIG.get('core_coins', '').split() if CONFIG.get('core_coins') else ['BTC', 'ETH', 'SOL', 'DOGE', 'XRP'],
+            'max_dynamic_coins': int(CONFIG.get('max_dynamic_coins', 3)),
+            'scanner_enabled': CONFIG.get('scanner_enabled', 'false').lower() == 'true',
         }
 
     async def start(self, assets: Optional[List[str]] = None, interval: Optional[str] = None):
@@ -206,6 +215,81 @@ class BotService:
         if self.bot_engine:
             return self.bot_engine.get_assets()
         return self.config['assets']
+
+    # ===== MARKET SCANNER METHODS =====
+
+    async def init_scanner(self):
+        """Initialize the market scanner with Hyperliquid data provider."""
+        if self.scanner:
+            return  # Already initialized
+
+        try:
+            from src.backend.trading.hyperliquid_api import HyperliquidAPI
+            hyperliquid = HyperliquidAPI()
+            provider = HyperliquidDataProvider(hyperliquid)
+            self.scanner = MarketScanner(
+                data_provider=provider,
+                core_coins=self.config['core_coins']
+            )
+            self.logger.info(f"Scanner initialized with core coins: {self.config['core_coins']}")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize scanner: {e}")
+
+    async def scan_market(self, max_dynamic: int = None) -> List[Dict]:
+        """
+        Scan the market for trading opportunities.
+
+        Args:
+            max_dynamic: Max dynamic coins to include (uses config if None)
+
+        Returns:
+            List of opportunity dicts sorted by score
+        """
+        if not self.scanner:
+            await self.init_scanner()
+
+        if not self.scanner:
+            self.logger.error("Scanner not available")
+            return []
+
+        try:
+            max_dyn = max_dynamic or self.config['max_dynamic_coins']
+            opportunities = await self.scanner.scan_market(
+                max_dynamic=max_dyn,
+                include_core=True
+            )
+            self.last_scan_results = [o.to_dict() for o in opportunities]
+            self._add_event(f"🔍 Market scan: {len(opportunities)} opportunities found")
+            return self.last_scan_results
+        except Exception as e:
+            self.logger.error(f"Market scan failed: {e}")
+            self._add_event(f"❌ Scan failed: {str(e)}", level="error")
+            return []
+
+    def get_scan_results(self) -> List[Dict]:
+        """Get last scan results."""
+        return self.last_scan_results
+
+    def get_scanned_symbols(self) -> List[str]:
+        """Get list of symbols from last scan (for trading)."""
+        return [o['symbol'] for o in self.last_scan_results]
+
+    async def update_tradeable_assets(self) -> List[str]:
+        """
+        Run scanner and update the assets to trade.
+
+        Returns:
+            Updated list of assets
+        """
+        await self.scan_market()
+        new_assets = self.get_scanned_symbols()
+
+        if new_assets:
+            self.config['assets'] = new_assets
+            self._add_event(f"📊 Trading assets updated: {', '.join(new_assets)}")
+            self.logger.info(f"Tradeable assets updated: {new_assets}")
+
+        return new_assets
 
     async def test_api_connections(self) -> Dict[str, bool]:
         """
