@@ -25,3 +25,11 @@ error.log
 trade_history.csv
 *.csv
 *.log
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
