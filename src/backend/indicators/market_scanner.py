@@ -114,8 +114,9 @@ class HyperliquidDataProvider:
             meta, asset_ctxs = response[0], response[1]
             universe = meta.get("universe", [])
 
-            # Get all mid prices
-            mids = await self.api.info.all_mids()
+            # Get all mid prices (sync call, run in thread)
+            import asyncio
+            mids = await asyncio.to_thread(self.api.info.all_mids)
 
             results = []
             for i, asset_info in enumerate(universe):
