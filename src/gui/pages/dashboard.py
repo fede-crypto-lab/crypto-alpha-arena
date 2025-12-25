@@ -6,6 +6,7 @@ import plotly.graph_objects as go
 from nicegui import ui
 from src.gui.services.bot_service import BotService
 from src.gui.services.state_manager import StateManager
+from src.backend.indicators.sentiment_client import SentimentClient
 
 
 def create_dashboard(bot_service: BotService, state_manager: StateManager):
@@ -13,8 +14,8 @@ def create_dashboard(bot_service: BotService, state_manager: StateManager):
 
     ui.label('Dashboard').classes('text-3xl font-bold mb-4 text-white')
 
-    # ===== METRICS CARDS (4 cards in grid) =====
-    with ui.grid(columns=4).classes('w-full gap-4 mb-6'):
+    # ===== METRICS CARDS (responsive grid) =====
+    with ui.element('div').classes('w-full gap-4 mb-6').style('display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));'):
         # Card 1: Balance (Total + Available)
         with ui.card().classes('metric-card'):
             balance_value = ui.label('$0.00').classes('text-4xl font-bold text-white')
@@ -38,10 +39,16 @@ def create_dashboard(bot_service: BotService, state_manager: StateManager):
             positions_value = ui.label('0').classes('text-4xl font-bold text-white')
             ui.label('Active Positions').classes('text-sm text-gray-200 mt-2')
 
-    # ===== CHARTS ROW =====
-    with ui.row().classes('w-full gap-4 mb-6'):
-        # Equity Curve Chart (left half)
-        with ui.card().classes('flex-1 p-4'):
+        # Card 5: Fear & Greed Index
+        with ui.card().classes('metric-card'):
+            fear_greed_value = ui.label('--').classes('text-4xl font-bold text-white')
+            fear_greed_label = ui.label('Fear & Greed').classes('text-sm text-gray-200 mt-1')
+            fear_greed_signal = ui.label('Loading...').classes('text-xs text-gray-400 mt-1')
+
+    # ===== CHARTS ROW (responsive) =====
+    with ui.element('div').classes('w-full gap-4 mb-6').style('display: grid; grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));'):
+        # Equity Curve Chart
+        with ui.card().classes('p-4'):
             ui.label('Portfolio Value').classes('text-xl font-bold text-white mb-2')
 
             equity_chart = ui.plotly(go.Figure(
@@ -64,8 +71,8 @@ def create_dashboard(bot_service: BotService, state_manager: StateManager):
                 )
             )).classes('w-full')
 
-        # Asset Allocation Pie Chart (right half)
-        with ui.card().classes('flex-1 p-4'):
+        # Asset Allocation Pie Chart
+        with ui.card().classes('p-4'):
             ui.label('Asset Allocation').classes('text-xl font-bold text-white mb-2')
 
             allocation_chart = ui.plotly(go.Figure(
@@ -179,6 +186,7 @@ def create_dashboard(bot_service: BotService, state_manager: StateManager):
     import asyncio
     last_refresh_time = None
     refresh_seconds_ago = 0
+    shown_event_ids = set()  # Track events already shown to avoid duplicates
 
     async def refresh_market_data():
         """Refresh market data from Hyperliquid without starting bot"""
@@ -238,6 +246,37 @@ def create_dashboard(bot_service: BotService, state_manager: StateManager):
             sharpe_value.text = f'{state.sharpe_ratio:.2f}'
             positions_value.text = str(len(state.positions or []))
 
+            # Update Fear & Greed indicator
+            try:
+                sentiment_client = SentimentClient(cache_ttl=300)  # 5 min cache
+                fng_data = sentiment_client.get_fear_greed_index()
+                if fng_data:
+                    value = fng_data.get('value', 0)
+                    classification = fng_data.get('classification', 'N/A')
+                    signal = fng_data.get('signal', 'NEUTRAL')
+
+                    fear_greed_value.text = str(value)
+                    fear_greed_label.text = classification
+
+                    # Color based on value
+                    if value <= 25:
+                        fear_greed_value.classes(remove='text-yellow-400 text-green-400', add='text-red-400')
+                        fear_greed_signal.text = f'🔴 {signal}'
+                    elif value <= 45:
+                        fear_greed_value.classes(remove='text-red-400 text-green-400', add='text-yellow-400')
+                        fear_greed_signal.text = f'🟡 {signal}'
+                    elif value <= 55:
+                        fear_greed_value.classes(remove='text-red-400 text-yellow-400 text-green-400')
+                        fear_greed_signal.text = f'⚪ {signal}'
+                    elif value <= 75:
+                        fear_greed_value.classes(remove='text-red-400 text-green-400', add='text-yellow-400')
+                        fear_greed_signal.text = f'🟡 {signal}'
+                    else:
+                        fear_greed_value.classes(remove='text-red-400 text-yellow-400', add='text-green-400')
+                        fear_greed_signal.text = f'🟢 {signal}'
+            except Exception:
+                pass  # Silently fail - not critical
+
             # Update equity curve chart
             equity_history = bot_service.get_equity_history()
             if equity_history:
@@ -293,10 +332,16 @@ def create_dashboard(bot_service: BotService, state_manager: StateManager):
                 with market_data_container:
                     ui.label('No market data available').classes('text-gray-400 text-center py-4')
 
-            # Update activity log with recent events
+            # Update activity log with recent events (avoid duplicates)
             recent_events = bot_service.get_recent_events(limit=5)
             for event in recent_events[-5:]:  # Last 5 only
-                activity_log.push(f"[{event['time']}] {event['message']}")
+                event_id = f"{event['time']}_{event['message']}"
+                if event_id not in shown_event_ids:
+                    shown_event_ids.add(event_id)
+                    activity_log.push(f"[{event['time']}] {event['message']}")
+                    # Keep set size manageable
+                    if len(shown_event_ids) > 100:
+                        shown_event_ids.clear()
 
             # Update button states based on bot status
             if state.is_running:

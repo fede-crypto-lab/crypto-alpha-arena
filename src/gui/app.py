@@ -69,6 +69,28 @@ def create_app():
             ::-webkit-scrollbar-thumb:hover {
                 background: #6b7280;
             }
+
+            /* Responsive layout */
+            @media (max-width: 1200px) {
+                .metric-card {
+                    padding: 16px;
+                }
+                .metric-card .text-4xl {
+                    font-size: 1.5rem;
+                }
+            }
+
+            @media (max-width: 900px) {
+                .sidebar-nav {
+                    width: 200px !important;
+                }
+            }
+
+            /* Ensure content fills available space */
+            .content-area {
+                min-width: 0;
+                width: 100%;
+            }
         </style>
     ''')
 
@@ -107,7 +129,7 @@ def create_app():
 
             # Main content area (will be updated by navigation)
             global content_container
-            content_container = ui.column().classes('flex-grow p-6 overflow-auto items-start')
+            content_container = ui.column().classes('flex-grow p-6 overflow-auto content-area')
 
     # Load default page
     with content_container:
