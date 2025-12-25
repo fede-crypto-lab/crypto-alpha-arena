@@ -103,8 +103,8 @@ def create_scanner(bot_service: BotService, state_manager: StateManager):
 
     # ===== SCAN LOGIC =====
     async def do_scan():
-        scan_btn.disable()
-        scan_status.text = 'Scanning...'
+        scan_btn.props('disabled=true')
+        scan_status.set_text('Scanning...')
 
         try:
             results = await bot_service.scan_market(max_dynamic=int(max_dynamic.value))
@@ -132,34 +132,31 @@ def create_scanner(bot_service: BotService, state_manager: StateManager):
                 long_count = len([r for r in results if r['signal'] == 'LONG'])
                 short_count = len([r for r in results if r['signal'] == 'SHORT'])
 
-                core_count_label.text = str(core_count)
-                dynamic_count_label.text = str(dynamic_count)
-                long_count_label.text = str(long_count)
-                short_count_label.text = str(short_count)
+                core_count_label.set_text(str(core_count))
+                dynamic_count_label.set_text(str(dynamic_count))
+                long_count_label.set_text(str(long_count))
+                short_count_label.set_text(str(short_count))
 
-                scan_status.text = f'Found {len(results)} opportunities'
-                ui.notify(f'Scan complete: {len(results)} opportunities', type='positive')
+                scan_status.set_text(f'Found {len(results)} opportunities')
             else:
                 results_table.rows = []
                 results_table.update()
-                scan_status.text = 'No opportunities found'
-                ui.notify('No opportunities found', type='warning')
+                scan_status.set_text('No opportunities found')
 
         except Exception as e:
-            scan_status.text = f'Error: {str(e)[:50]}'
-            ui.notify(f'Scan failed: {str(e)}', type='negative')
+            scan_status.set_text(f'Error: {str(e)[:50]}')
         finally:
-            scan_btn.enable()
+            scan_btn.props('disabled=false')
 
     def apply_results():
         symbols = bot_service.get_scanned_symbols()
         if symbols:
             bot_service.config['assets'] = symbols
-            current_assets_label.text = ', '.join(symbols)
-            ui.notify(f'Trading assets updated: {len(symbols)} coins', type='positive')
+            current_assets_label.set_text(', '.join(symbols))
+            ui.notify(f'Updated: {len(symbols)} coins', type='positive')
         else:
-            ui.notify('No scan results. Run a scan first.', type='warning')
+            ui.notify('Run a scan first', type='warning')
 
-    # Connect buttons
-    scan_btn.on('click', lambda: asyncio.create_task(do_scan()))
-    apply_btn.on('click', apply_results)
+    # Connect buttons using on_click (sync wrapper)
+    scan_btn.on_click(lambda: asyncio.create_task(do_scan()))
+    apply_btn.on_click(apply_results)
