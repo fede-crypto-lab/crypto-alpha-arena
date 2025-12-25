@@ -21,3 +21,7 @@ rad.json
 #Test results file
 TestResults.xmlerror.log
 error.log
+error.log
+trade_history.csv
+*.csv
+*.log
