@@ -68,6 +68,14 @@ class TradingBotEngine:
     DEFAULT_TP_DISTANCE_PCT = 2.0   # 2% profit target
     DEFAULT_SL_DISTANCE_PCT = 1.5   # 1.5% stop loss
 
+    # ===== ANTI-CHURN SETTINGS =====
+    # Minimum time (seconds) before allowing opposite direction trade
+    MIN_DIRECTION_CHANGE_COOLDOWN = 1800  # 30 minutes before flip allowed
+    # Minimum time (seconds) to hold a position before closing
+    MIN_HOLD_TIME = 900  # 15 minutes minimum hold
+    # Minimum time (seconds) between any trades on same asset
+    MIN_TRADE_INTERVAL = 300  # 5 minutes between trades
+
     def __init__(
         self,
         assets: List[str],
@@ -108,6 +116,12 @@ class TradingBotEngine:
         self.start_time: Optional[datetime] = None
         self.invocation_count = 0
         self.trade_log: List[float] = []
+
+        # ===== ANTI-CHURN TRACKING =====
+        # Track last trade time and direction per asset: {asset: {'time': datetime, 'direction': 'long'/'short'}}
+        self._last_trade_info: Dict[str, Dict] = {}
+        # Track position open time per asset: {asset: datetime}
+        self._position_open_time: Dict[str, datetime] = {}
         self.active_trades: List[Dict] = []
         self.recent_events: deque = deque(maxlen=200)
         self.initial_account_value: Optional[float] = None
@@ -559,6 +573,86 @@ class TradingBotEngine:
             'update_tp': update_tp,
             'update_sl': update_sl
         }
+
+    # ===== ANTI-CHURN METHODS =====
+    def _is_trade_allowed(self, asset: str, action: str, current_position: Optional[Dict] = None) -> Dict[str, Any]:
+        """
+        Check if a trade is allowed based on anti-churn rules.
+
+        Args:
+            asset: Asset symbol
+            action: 'buy', 'sell', or 'hold'
+            current_position: Current position info if any
+
+        Returns:
+            Dict with 'allowed' (bool), 'reason' (str), 'wait_seconds' (int)
+        """
+        now = datetime.utcnow()
+        new_direction = 'long' if action == 'buy' else 'short' if action == 'sell' else None
+
+        if action == 'hold':
+            return {'allowed': True, 'reason': 'Hold action always allowed', 'wait_seconds': 0}
+
+        # Check minimum trade interval
+        if asset in self._last_trade_info:
+            last_info = self._last_trade_info[asset]
+            last_time = last_info.get('time')
+            last_direction = last_info.get('direction')
+
+            if last_time:
+                seconds_since_last = (now - last_time).total_seconds()
+
+                # Check general trade interval
+                if seconds_since_last < self.MIN_TRADE_INTERVAL:
+                    wait = int(self.MIN_TRADE_INTERVAL - seconds_since_last)
+                    return {
+                        'allowed': False,
+                        'reason': f'⏳ Trade too soon - wait {wait}s (min interval: {self.MIN_TRADE_INTERVAL}s)',
+                        'wait_seconds': wait
+                    }
+
+                # Check direction change cooldown
+                if last_direction and new_direction and last_direction != new_direction:
+                    if seconds_since_last < self.MIN_DIRECTION_CHANGE_COOLDOWN:
+                        wait = int(self.MIN_DIRECTION_CHANGE_COOLDOWN - seconds_since_last)
+                        return {
+                            'allowed': False,
+                            'reason': f'⏳ Direction flip blocked - wait {wait}s before {last_direction}→{new_direction} (cooldown: {self.MIN_DIRECTION_CHANGE_COOLDOWN}s)',
+                            'wait_seconds': wait
+                        }
+
+        # Check minimum hold time for existing position
+        if current_position and asset in self._position_open_time:
+            open_time = self._position_open_time[asset]
+            hold_seconds = (now - open_time).total_seconds()
+            current_side = current_position.get('side', '')
+
+            # If trying to close or flip the position
+            is_closing = (current_side == 'long' and action == 'sell') or \
+                        (current_side == 'short' and action == 'buy')
+
+            if is_closing and hold_seconds < self.MIN_HOLD_TIME:
+                wait = int(self.MIN_HOLD_TIME - hold_seconds)
+                return {
+                    'allowed': False,
+                    'reason': f'⏳ Position too new - hold {wait}s more (min hold: {self.MIN_HOLD_TIME}s)',
+                    'wait_seconds': wait
+                }
+
+        return {'allowed': True, 'reason': 'Trade allowed', 'wait_seconds': 0}
+
+    def _record_trade(self, asset: str, direction: str):
+        """Record a trade for anti-churn tracking."""
+        now = datetime.utcnow()
+        self._last_trade_info[asset] = {'time': now, 'direction': direction}
+        self._position_open_time[asset] = now
+        self.logger.info(f"📝 Recorded trade: {asset} {direction} at {now.isoformat()}")
+
+    def _clear_position_tracking(self, asset: str):
+        """Clear position tracking when position is fully closed."""
+        if asset in self._position_open_time:
+            del self._position_open_time[asset]
+        self.logger.debug(f"📝 Cleared position tracking for {asset}")
 
     async def _sync_exchange_state(self) -> Optional[Dict[str, Any]]:
         """
@@ -1333,6 +1427,44 @@ class TradingBotEngine:
                         confidence = decision.get('confidence', 75.0)
 
                         if action in ['buy', 'sell']:
+                            # ===== ANTI-CHURN CHECK =====
+                            # Get current position for this asset
+                            current_pos = None
+                            for pos in positions:
+                                if pos.get('coin') == asset:
+                                    size = float(pos.get('szi', 0) or 0)
+                                    if abs(size) > 0.0001:
+                                        current_pos = {
+                                            'side': 'long' if size > 0 else 'short',
+                                            'size': abs(size)
+                                        }
+                                    break
+
+                            churn_check = self._is_trade_allowed(asset, action, current_pos)
+                            if not churn_check['allowed']:
+                                self.logger.warning(f"🚫 ANTI-CHURN: {asset} {action} blocked - {churn_check['reason']}")
+                                continue  # Skip this trade
+
+                            # ===== CLOSE OPPOSITE POSITION FIRST =====
+                            # If there's an existing position in opposite direction, close it first
+                            if current_pos:
+                                new_direction = 'long' if action == 'buy' else 'short'
+                                if current_pos['side'] != new_direction:
+                                    self.logger.info(f"🔄 Closing {current_pos['side']} {asset} position before opening {new_direction}")
+                                    try:
+                                        # Close the existing position
+                                        if current_pos['side'] == 'long':
+                                            await self.hyperliquid.place_sell_order(asset, current_pos['size'])
+                                        else:
+                                            await self.hyperliquid.place_buy_order(asset, current_pos['size'])
+
+                                        self.logger.info(f"✅ Closed {current_pos['side']} {asset} position ({current_pos['size']:.6f})")
+                                        self._clear_position_tracking(asset)
+                                        await asyncio.sleep(2)  # Wait for order to settle
+                                    except Exception as close_err:
+                                        self.logger.error(f"❌ Failed to close opposite position: {close_err}")
+                                        continue  # Skip opening new position if close failed
+
                             # MANUAL MODE
                             if self.trading_mode == "manual":
                                 try:
@@ -1418,6 +1550,10 @@ class TradingBotEngine:
                                         order_result = await self.hyperliquid.place_sell_order(asset, amount)
 
                                     self.logger.info(f"Executed {action} {asset}: {amount:.6f} @ {current_price}")
+
+                                    # Record trade for anti-churn tracking
+                                    trade_direction = 'long' if action == 'buy' else 'short'
+                                    self._record_trade(asset, trade_direction)
 
                                     # POST-TRADE VERIFICATION - get actual size from exchange
                                     expected_side = 'long' if action == 'buy' else 'short'
