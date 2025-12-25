@@ -1430,7 +1430,7 @@ class TradingBotEngine:
                             # ===== ANTI-CHURN CHECK =====
                             # Get current position for this asset
                             current_pos = None
-                            for pos in positions:
+                            for pos in self.state.positions:
                                 if pos.get('coin') == asset:
                                     size = float(pos.get('szi', 0) or 0)
                                     if abs(size) > 0.0001:
