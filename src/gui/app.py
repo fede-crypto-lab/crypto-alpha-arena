@@ -98,9 +98,9 @@ def create_app():
     with ui.column().classes('w-full h-screen'):
         create_header(state_manager)
 
-        with ui.row().classes('w-full flex-grow'):
-            # Sidebar with navigation
-            with ui.column().classes('w-64 bg-gray-800 p-4 gap-2 h-full'):
+        with ui.row().classes('w-full flex-grow flex-nowrap'):
+            # Sidebar with navigation (flex-shrink-0 prevents it from shrinking)
+            with ui.column().classes('w-64 bg-gray-800 p-4 gap-2 h-full flex-shrink-0'):
                 # Navigation buttons
                 menu_items = [
                     ('Dashboard', '📊 Dashboard', 'Main dashboard with metrics'),
