@@ -12,6 +12,9 @@ from src.backend.indicators.sentiment_client import SentimentClient
 def create_dashboard(bot_service: BotService, state_manager: StateManager):
     """Create dashboard page with real-time metrics, charts, and controls"""
 
+    # Create sentiment client once (so cache works across updates)
+    sentiment_client = SentimentClient(cache_ttl=300)  # 5 min cache
+
     ui.label('Dashboard').classes('text-3xl font-bold mb-4 text-white')
 
     # ===== METRICS CARDS (responsive grid) =====
@@ -225,7 +228,7 @@ def create_dashboard(bot_service: BotService, state_manager: StateManager):
 
     async def update_dashboard():
         """Update all dashboard components with latest data"""
-        nonlocal refresh_seconds_ago
+        nonlocal refresh_seconds_ago, sentiment_client
 
         try:
             state = state_manager.get_state()
@@ -246,9 +249,8 @@ def create_dashboard(bot_service: BotService, state_manager: StateManager):
             sharpe_value.text = f'{state.sharpe_ratio:.2f}'
             positions_value.text = str(len(state.positions or []))
 
-            # Update Fear & Greed indicator
+            # Update Fear & Greed indicator (uses cached client)
             try:
-                sentiment_client = SentimentClient(cache_ttl=300)  # 5 min cache
                 fng_data = sentiment_client.get_fear_greed_index()
                 if fng_data:
                     value = fng_data.get('value', 0)
