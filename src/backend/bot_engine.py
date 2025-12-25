@@ -1743,7 +1743,18 @@ class TradingBotEngine:
                                     'rationale': rationale
                                 })
 
-                    self.state.market_data = market_sections
+                    # Truncate market_data to only UI-essential fields (avoid WebSocket payload too large)
+                    self.state.market_data = [{
+                        'asset': s.get('asset'),
+                        'current_price': s.get('current_price'),
+                        'funding_rate': s.get('funding_rate'),
+                        'open_interest': s.get('open_interest'),
+                        'intraday': {'rsi14': s.get('intraday', {}).get('rsi14')},
+                        'long_term': {
+                            'ema20': s.get('long_term', {}).get('ema20'),
+                            'ema50': s.get('long_term', {}).get('ema50')
+                        }
+                    } for s in market_sections]
                     self.state.last_update = datetime.now(UTC).isoformat()
                     self._notify_state_update()
 
