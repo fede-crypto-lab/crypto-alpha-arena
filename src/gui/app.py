@@ -114,22 +114,33 @@ def create_app():
         dashboard.create_dashboard(bot_service, state_manager)
 
     # Auto-start bot if AUTOSTART_BOT=true (using timer to run after UI is ready)
-    async def _try_autostart():
+    async def _try_autostart(attempt: int = 1, max_attempts: int = 5):
         global _autostart_done
-        if _autostart_done:
+        if _autostart_done or bot_service.is_running():
             return
-        if CONFIG.get("autostart_bot") and not bot_service.is_running():
-            _autostart_done = True
-            logger.info("[AUTOSTART] AUTOSTART_BOT enabled - starting bot automatically...")
-            try:
-                await bot_service.start()
-                logger.info("[AUTOSTART] Bot started successfully")
-            except Exception as e:
-                logger.error(f"[AUTOSTART] Failed to start bot: {e}")
 
-    # Trigger autostart after 2 seconds (ensures UI is fully loaded)
+        if not CONFIG.get("autostart_bot"):
+            return
+
+        logger.info(f"[AUTOSTART] Attempt {attempt}/{max_attempts} - starting bot...")
+        try:
+            await bot_service.start()
+            _autostart_done = True
+            logger.info("[AUTOSTART] Bot started successfully!")
+        except Exception as e:
+            error_str = str(e)
+            # Retry on rate limit (429) or connection errors
+            if attempt < max_attempts and ("429" in error_str or "Connection" in error_str or "timeout" in error_str.lower()):
+                wait_time = 5 * attempt  # 5s, 10s, 15s, 20s, 25s
+                logger.warning(f"[AUTOSTART] Rate limited, retrying in {wait_time}s...")
+                await asyncio.sleep(wait_time)
+                await _try_autostart(attempt + 1, max_attempts)
+            else:
+                logger.error(f"[AUTOSTART] Failed to start bot after {attempt} attempts: {e}")
+
+    # Trigger autostart after 3 seconds (ensures UI is fully loaded)
     if CONFIG.get("autostart_bot"):
-        ui.timer(2.0, _try_autostart, once=True)
+        ui.timer(3.0, _try_autostart, once=True)
 
 
 def navigate(page: str):
