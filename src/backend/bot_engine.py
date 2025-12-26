@@ -66,8 +66,8 @@ class TradingBotEngine:
     MIN_PRICE_CHANGE_PCT = 0.5  # Only update if price changed by 0.5%+
 
     # Default TP/SL distances when LLM fails (as percentage of price)
-    DEFAULT_TP_DISTANCE_PCT = 2.0   # 2% profit target
-    DEFAULT_SL_DISTANCE_PCT = 1.5   # 1.5% stop loss
+    DEFAULT_TP_DISTANCE_PCT = 3.0   # 3% profit target (let winners run)
+    DEFAULT_SL_DISTANCE_PCT = 1.5   # 1.5% stop loss (protect capital)
 
     # ===== ANTI-CHURN SETTINGS =====
     # Minimum time (seconds) before allowing opposite direction trade
