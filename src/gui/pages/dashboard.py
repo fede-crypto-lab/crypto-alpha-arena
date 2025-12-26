@@ -12,8 +12,8 @@ from src.backend.indicators.sentiment_client import SentimentClient
 def create_dashboard(bot_service: BotService, state_manager: StateManager):
     """Create dashboard page with real-time metrics, charts, and controls"""
 
-    # Create sentiment client once (so cache works across updates)
-    sentiment_client = SentimentClient(cache_ttl=300)  # 5 min cache
+    # Create sentiment client once (Fear & Greed updates once per day, so 1h cache is fine)
+    sentiment_client = SentimentClient(cache_ttl=3600)  # 1 hour cache
 
     ui.label('Dashboard').classes('text-3xl font-bold mb-4 text-white')
 
