@@ -16,6 +16,9 @@ from datetime import datetime
 class TradingAgent:
     """High-level trading agent that delegates reasoning to an LLM service."""
 
+    # TAAPI rate limit for free tier (1 request per 15 seconds)
+    TAAPI_RATE_LIMIT_SECONDS = 15
+
     # Fallback models when primary model fails (402 Payment Required, rate limits, etc.)
     # Verified available on OpenRouter as of Dec 2025
     FALLBACK_MODELS = [
@@ -42,6 +45,8 @@ class TradingAgent:
         self.taapi = TAAPIClient()
         # Fast/cheap sanitizer model to normalize outputs on parse failures
         self.sanitize_model = CONFIG.get("sanitize_model") or "openai/gpt-4o-mini"
+        # Track last TAAPI tool call time for rate limiting
+        self._last_taapi_tool_call = 0.0
 
         # Detect models that don't support structured outputs (response_format)
         # DeepSeek via OpenRouter returns "This response_format type is unavailable now"
@@ -669,6 +674,13 @@ class TradingAgent:
                             })
                             continue
                         try:
+                            # Rate limit TAAPI calls (free tier: 1 req/15s)
+                            elapsed = time.time() - self._last_taapi_tool_call
+                            if elapsed < self.TAAPI_RATE_LIMIT_SECONDS:
+                                wait_time = self.TAAPI_RATE_LIMIT_SECONDS - elapsed
+                                logging.info(f"TAAPI rate limit: waiting {wait_time:.1f}s before tool call")
+                                time.sleep(wait_time)
+
                             params = {
                                 "secret": self.taapi.api_key,
                                 "exchange": "binance",
@@ -682,6 +694,7 @@ class TradingAgent:
                             if isinstance(args.get("other_params"), dict):
                                 params.update(args["other_params"])
                             ind_resp = requests.get(f"{self.taapi.base_url}{args['indicator']}", params=params, timeout=30).json()
+                            self._last_taapi_tool_call = time.time()  # Update after successful call
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tc.get("id"),
