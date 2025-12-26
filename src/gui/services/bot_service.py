@@ -30,14 +30,14 @@ class BotService:
         self.last_scan_results: List[Dict] = []
 
         # Configuration
-        # Top 5 by market cap (excluding stablecoins) available on Hyperliquid
-        DEFAULT_TOP5 = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE']
+        # Top assets by market cap (excluding stablecoins) available on Hyperliquid
+        DEFAULT_ASSETS = ['BTC', 'ETH', 'SOL', 'DOGE']
         self.config = {
-            'assets': CONFIG.get('assets', '').split() if CONFIG.get('assets') else DEFAULT_TOP5,
+            'assets': CONFIG.get('assets', '').split() if CONFIG.get('assets') else DEFAULT_ASSETS,
             'interval': CONFIG.get('interval', '5m'),
             'model': CONFIG.get('llm_model', 'x-ai/grok-4'),
             # Scanner config
-            'core_coins': CONFIG.get('core_coins', '').split() if CONFIG.get('core_coins') else DEFAULT_TOP5,
+            'core_coins': CONFIG.get('core_coins', '').split() if CONFIG.get('core_coins') else DEFAULT_ASSETS,
             'max_dynamic_coins': int(CONFIG.get('max_dynamic_coins', 3)),
             'scanner_enabled': CONFIG.get('scanner_enabled', 'false').lower() == 'true',
         }
