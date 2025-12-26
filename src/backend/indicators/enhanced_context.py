@@ -7,7 +7,7 @@ import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
-from .sentiment_client import SentimentClient
+from .sentiment_client import get_shared_client
 from .whale_alert_client import WhaleAlertClient
 from .pivot_calculator import PivotCalculator
 from .pattern_detector import PatternDetector
@@ -50,7 +50,7 @@ class EnhancedMarketContext:
             sentiment_cache_ttl: Cache TTL for sentiment data (default: 1 hour)
             whale_cache_ttl: Cache TTL for whale data (default: 5 minutes)
         """
-        self.sentiment = SentimentClient(cache_ttl=sentiment_cache_ttl)
+        self.sentiment = get_shared_client(cache_ttl=sentiment_cache_ttl)
         self.whale = WhaleAlertClient(cache_ttl=whale_cache_ttl)
         self.pivot = PivotCalculator()
         self.pattern = PatternDetector()

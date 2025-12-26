@@ -191,8 +191,19 @@ Interpretation:
             return "high risk of correction, consider taking profits"
 
 
+# Singleton instance - shared across all modules for cache efficiency
+_shared_client: Optional['SentimentClient'] = None
+
+
+def get_shared_client(cache_ttl: int = 900) -> 'SentimentClient':
+    """Get or create the shared SentimentClient singleton."""
+    global _shared_client
+    if _shared_client is None:
+        _shared_client = SentimentClient(cache_ttl=cache_ttl)
+    return _shared_client
+
+
 # Convenience function for quick access
 def get_fear_greed() -> Optional[Dict[str, Any]]:
     """Quick access to Fear & Greed Index."""
-    client = SentimentClient()
-    return client.get_fear_greed_index()
+    return get_shared_client().get_fear_greed_index()

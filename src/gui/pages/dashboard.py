@@ -6,28 +6,14 @@ import plotly.graph_objects as go
 from nicegui import ui
 from src.gui.services.bot_service import BotService
 from src.gui.services.state_manager import StateManager
-from src.backend.indicators.sentiment_client import SentimentClient
-from src.backend.config_loader import CONFIG
-
-
-def _interval_to_seconds(interval: str) -> int:
-    """Convert interval string (e.g. '15m', '1h') to seconds."""
-    if interval.endswith('m'):
-        return int(interval[:-1]) * 60
-    elif interval.endswith('h'):
-        return int(interval[:-1]) * 3600
-    elif interval.endswith('d'):
-        return int(interval[:-1]) * 86400
-    return 3600  # default 1h
+from src.backend.indicators.sentiment_client import get_shared_client
 
 
 def create_dashboard(bot_service: BotService, state_manager: StateManager):
     """Create dashboard page with real-time metrics, charts, and controls"""
 
-    # Cache sentiment for the same duration as bot cycle (no point fetching more often)
-    bot_interval = CONFIG.get("interval", "15m")
-    cache_ttl = _interval_to_seconds(bot_interval)
-    sentiment_client = SentimentClient(cache_ttl=cache_ttl)
+    # Use shared singleton client (cache is set on first call based on bot interval)
+    sentiment_client = get_shared_client()
 
     ui.label('Dashboard').classes('text-3xl font-bold mb-4 text-white')
 
@@ -242,7 +228,7 @@ def create_dashboard(bot_service: BotService, state_manager: StateManager):
 
     async def update_dashboard():
         """Update all dashboard components with latest data"""
-        nonlocal refresh_seconds_ago, sentiment_client
+        nonlocal refresh_seconds_ago
 
         try:
             state = state_manager.get_state()
