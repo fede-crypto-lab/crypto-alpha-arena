@@ -231,7 +231,8 @@ def create_dashboard(bot_service: BotService, state_manager: StateManager):
         nonlocal refresh_seconds_ago
 
         try:
-            state = state_manager.get_state()
+            # Read directly from bot_service for real-time sync
+            state = bot_service.get_state()
 
             # Update metrics cards - show total account value and available balance
             total_val = state.total_value if state.total_value else state.balance

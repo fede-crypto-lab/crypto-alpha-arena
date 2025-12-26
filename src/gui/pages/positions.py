@@ -153,9 +153,10 @@ def create_positions(bot_service: BotService, state_manager: StateManager):
     
     # Update function
     async def update_positions():
-        """Update positions table with latest data"""
+        """Update positions table with latest data from bot engine"""
         try:
-            state = state_manager.get_state()
+            # Read directly from bot_service for real-time sync
+            state = bot_service.get_state()
             positions = state.positions or []
             
             # Show/hide empty message
