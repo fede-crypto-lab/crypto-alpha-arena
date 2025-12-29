@@ -43,6 +43,7 @@ class BotState:
     market_data: List[Dict] = field(default_factory=list)
     pending_proposals: List[Dict] = field(default_factory=list)
     last_reasoning: Dict = field(default_factory=dict)
+    last_prompt: str = ""  # Last LLM prompt for debugging
     scan_results: List[Dict] = field(default_factory=list)  # Market scanner opportunities
     last_update: str = ""
     error: Optional[str] = None
@@ -1399,6 +1400,10 @@ class TradingBotEngine:
                         })
                     ])
                     context = json.dumps(context_payload, default=json_default, indent=2)
+
+                    # Store prompt in state for UI display
+                    self.state.last_prompt = context
+                    self._notify_state_update()
 
                     with open("data/prompts.log", "a", encoding="utf-8") as f:
                         f.write(f"\n{'='*80}\n")

@@ -15,6 +15,23 @@ def create_reasoning(bot_service: BotService, state_manager: StateManager):
 
     ui.label('AI Reasoning').classes('text-3xl font-bold mb-4 text-white')
 
+    # ===== LLM PROMPT SECTION =====
+    with ui.expansion('📤 LLM Prompt (Context sent to AI)', icon='code').classes('w-full mb-4'):
+        with ui.card().classes('w-full p-4').style('max-height: 400px;'):
+            with ui.row().classes('w-full justify-between items-center mb-2'):
+                ui.label('User Prompt (Market Data)').classes('text-lg font-bold text-white')
+
+                async def copy_prompt():
+                    state = state_manager.get_state()
+                    prompt = state.last_prompt or '{}'
+                    ui.clipboard.write(prompt)
+                    ui.notify('Prompt copied to clipboard!', type='positive')
+
+                ui.button('📋 Copy', on_click=copy_prompt).props('size=sm')
+
+            with ui.scroll_area().classes('w-full').style('height: 300px;'):
+                prompt_display = ui.code('{}', language='json').classes('w-full text-xs')
+
     # ===== JSON EDITOR SECTION =====
     with ui.card().classes('w-full p-4 mb-6').style('max-height: 450px;'):
         with ui.row().classes('w-full justify-between items-center mb-2'):
@@ -77,6 +94,20 @@ def create_reasoning(bot_service: BotService, state_manager: StateManager):
     async def update_reasoning():
         """Update JSON editor and timeline with latest reasoning data"""
         state = state_manager.get_state()
+
+        # Update prompt display
+        prompt_data = state.last_prompt
+        if prompt_data:
+            try:
+                # Limit size to avoid UI issues
+                if len(prompt_data) > 50000:
+                    prompt_display.content = prompt_data[:50000] + '\n... (truncated)'
+                else:
+                    prompt_display.content = prompt_data
+            except Exception as e:
+                prompt_display.content = f'{{"error": "{str(e)}"}}'
+        else:
+            prompt_display.content = '{"message": "No prompt data yet. Start the bot to see LLM prompts."}'
 
         # Update JSON display
         reasoning_data = state.last_reasoning
