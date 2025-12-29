@@ -206,12 +206,13 @@ class TAAPIClient:
         result["5m"]["rsi7"] = self._extract_series(bulk_5m.get("rsi7"), "value")
         result["5m"]["rsi14"] = self._extract_series(bulk_5m.get("rsi14"), "value")
 
-        # Wait for rate limit only on free plan
+        # Wait for rate limit - shorter for paid plan
         if not self.is_paid:
             logging.info(f"Waiting {self.FREE_PLAN_RATE_LIMIT}s for TAAPI rate limit (Free plan)...")
             time.sleep(self.FREE_PLAN_RATE_LIMIT)
         else:
-            time.sleep(0.5)  # Small delay to avoid hammering API
+            # Paid plan still has per-minute rate limits, use 2s delay
+            time.sleep(2)
 
         # Bulk request for higher timeframe indicators
         # Paid plan: Extended indicators (Bollinger, Supertrend, Stoch RSI, ADX, OBV)
