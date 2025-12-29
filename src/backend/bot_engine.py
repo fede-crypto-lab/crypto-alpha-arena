@@ -1227,14 +1227,15 @@ class TradingBotEngine:
 
                             indicators = self.taapi.fetch_asset_indicators(asset)
 
-                            # Wait between assets only on free TAAPI plan
+                            # Wait between assets - shorter for paid TAAPI plan
                             if idx < len(self.assets) - 1:
                                 is_taapi_paid = CONFIG.get("taapi_plan", "free").lower() == "paid"
                                 if not is_taapi_paid:
                                     self.logger.info(f"Waiting 15s before fetching next asset (TAAPI rate limit)...")
                                     await asyncio.sleep(15)
                                 else:
-                                    await asyncio.sleep(0.5)  # Small delay for paid plan
+                                    # Paid plan: 3s delay to avoid Hyperliquid rate limits
+                                    await asyncio.sleep(3)
                             
                             ema20_5m_series = indicators["5m"].get("ema20", [])
                             macd_5m_series = indicators["5m"].get("macd", [])
