@@ -86,6 +86,7 @@ CONFIG = {
     "autostart_bot": _get_bool("AUTOSTART_BOT", False),  # Auto-start bot on deploy
     # API keys - not required during module import (checked when bot starts)
     "taapi_api_key": _get_env("TAAPI_API_KEY"),
+    "taapi_plan": _get_env("TAAPI_PLAN", "free"),  # "free" or "paid" - controls rate limits and available coins
     "hyperliquid_private_key": _get_env("HYPERLIQUID_PRIVATE_KEY") or _get_env("LIGHTER_PRIVATE_KEY"),
     "mnemonic": _get_env("MNEMONIC"),
     # Hyperliquid network/base URL overrides

@@ -30,8 +30,17 @@ class BotService:
         self.last_scan_results: List[Dict] = []
 
         # Configuration
-        # Top assets by market cap (excluding stablecoins) available on Hyperliquid
-        DEFAULT_ASSETS = ['BTC', 'ETH', 'SOL', 'DOGE']
+        # Top assets by market cap - depends on TAAPI plan
+        # Free plan: Only BTC/ETH are fully supported by TAAPI
+        # Paid plan: All coins supported
+        is_taapi_paid = CONFIG.get('taapi_plan', 'free').lower() == 'paid'
+        if is_taapi_paid:
+            DEFAULT_ASSETS = ['BTC', 'ETH', 'SOL', 'DOGE', 'LINK', 'AVAX']
+            self.logger.info("TAAPI PAID plan: Using extended coin list")
+        else:
+            DEFAULT_ASSETS = ['BTC', 'ETH']  # Free plan only supports these
+            self.logger.info("TAAPI FREE plan: Using BTC/ETH only")
+
         self.config = {
             'assets': CONFIG.get('assets', '').split() if CONFIG.get('assets') else DEFAULT_ASSETS,
             'interval': CONFIG.get('interval', '5m'),

@@ -45,8 +45,10 @@ class TradingAgent:
         self.taapi = TAAPIClient()
         # Fast/cheap sanitizer model to normalize outputs on parse failures
         self.sanitize_model = CONFIG.get("sanitize_model") or "openai/gpt-4o-mini"
-        # Track last TAAPI tool call time for rate limiting
+        # Track last TAAPI tool call time for rate limiting (free plan only)
         self._last_taapi_tool_call = 0.0
+        # Check if using paid TAAPI plan (no rate limits)
+        self._taapi_is_paid = CONFIG.get("taapi_plan", "free").lower() == "paid"
 
         # Detect models that don't support structured outputs (response_format)
         # DeepSeek via OpenRouter returns "This response_format type is unavailable now"
@@ -674,12 +676,13 @@ class TradingAgent:
                             })
                             continue
                         try:
-                            # Rate limit TAAPI calls (free tier: 1 req/15s)
-                            elapsed = time.time() - self._last_taapi_tool_call
-                            if elapsed < self.TAAPI_RATE_LIMIT_SECONDS:
-                                wait_time = self.TAAPI_RATE_LIMIT_SECONDS - elapsed
-                                logging.info(f"TAAPI rate limit: waiting {wait_time:.1f}s before tool call")
-                                time.sleep(wait_time)
+                            # Rate limit TAAPI calls (free tier only: 1 req/15s)
+                            if not self._taapi_is_paid:
+                                elapsed = time.time() - self._last_taapi_tool_call
+                                if elapsed < self.TAAPI_RATE_LIMIT_SECONDS:
+                                    wait_time = self.TAAPI_RATE_LIMIT_SECONDS - elapsed
+                                    logging.info(f"TAAPI rate limit: waiting {wait_time:.1f}s before tool call")
+                                    time.sleep(wait_time)
 
                             params = {
                                 "secret": self.taapi.api_key,

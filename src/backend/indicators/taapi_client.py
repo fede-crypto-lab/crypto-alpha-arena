@@ -11,10 +11,13 @@ from src.backend.indicators.taapi_cache import get_cache
 class TAAPIClient:
     """Fetches TA indicators with retry/backoff semantics for resilience."""
 
+    # Rate limit for free plan (1 request per 15 seconds)
+    FREE_PLAN_RATE_LIMIT = 15
+
     def __init__(self, enable_cache: bool = True, cache_ttl: int = 60):
         """
         Initialize TAAPI credentials and base URL.
-        
+
         Args:
             enable_cache: Enable caching to reduce API calls
             cache_ttl: Cache time-to-live in seconds (default: 60s)
@@ -24,6 +27,12 @@ class TAAPIClient:
         self.bulk_url = "https://api.taapi.io/bulk"
         self.enable_cache = enable_cache
         self.cache = get_cache(ttl=cache_ttl) if enable_cache else None
+        # Check if using paid plan (no rate limits, more indicators)
+        self.is_paid = CONFIG.get("taapi_plan", "free").lower() == "paid"
+        if self.is_paid:
+            logging.info("TAAPI: Using PAID plan (no rate limits, all coins, extended indicators)")
+        else:
+            logging.info("TAAPI: Using FREE plan (15s rate limit, BTC/ETH only)")
 
     def _get_with_retry(self, url, params, retries=3, backoff=0.5):
         """Perform a GET request with exponential backoff retry logic."""
@@ -197,30 +206,79 @@ class TAAPIClient:
         result["5m"]["rsi7"] = self._extract_series(bulk_5m.get("rsi7"), "value")
         result["5m"]["rsi14"] = self._extract_series(bulk_5m.get("rsi14"), "value")
 
-        # Wait 15 seconds to respect Free plan rate limit (1 request per 15 seconds)
-        logging.info(f"Waiting 15s for TAAPI rate limit (Free plan: 1 req/15s)...")
-        time.sleep(15)
+        # Wait for rate limit only on free plan
+        if not self.is_paid:
+            logging.info(f"Waiting {self.FREE_PLAN_RATE_LIMIT}s for TAAPI rate limit (Free plan)...")
+            time.sleep(self.FREE_PLAN_RATE_LIMIT)
+        else:
+            time.sleep(0.5)  # Small delay to avoid hammering API
 
-        # Bulk request for 4h indicators
-        # Note: 4 single values (4 calc) + MACD (5 calc) + RSI14 (5 calc) = 14 calculations
-        indicators_4h = [
-            {"id": "ema20", "indicator": "ema", "period": 20},
-            {"id": "ema50", "indicator": "ema", "period": 50},
-            {"id": "atr3", "indicator": "atr", "period": 3},
-            {"id": "atr14", "indicator": "atr", "period": 14},
-            {"id": "macd", "indicator": "macd", "results": 5},
-            {"id": "rsi14", "indicator": "rsi", "period": 14, "results": 5}
-        ]
+        # Bulk request for higher timeframe indicators
+        # Paid plan: Extended indicators (Bollinger, Supertrend, Stoch RSI, ADX, OBV)
+        if self.is_paid:
+            indicators_ht = [
+                {"id": "ema20", "indicator": "ema", "period": 20},
+                {"id": "ema50", "indicator": "ema", "period": 50},
+                {"id": "atr3", "indicator": "atr", "period": 3},
+                {"id": "atr14", "indicator": "atr", "period": 14},
+                {"id": "macd", "indicator": "macd", "results": 5},
+                {"id": "rsi14", "indicator": "rsi", "period": 14, "results": 5},
+                # Extended indicators for paid plan
+                {"id": "bbands", "indicator": "bbands", "period": 20},
+                {"id": "supertrend", "indicator": "supertrend", "period": 10, "multiplier": 3},
+                {"id": "stochrsi", "indicator": "stochrsi", "period": 14},
+                {"id": "adx", "indicator": "adx", "period": 14},
+                {"id": "obv", "indicator": "obv"},
+            ]
+        else:
+            # Free plan: Basic indicators only
+            indicators_ht = [
+                {"id": "ema20", "indicator": "ema", "period": 20},
+                {"id": "ema50", "indicator": "ema", "period": 50},
+                {"id": "atr3", "indicator": "atr", "period": 3},
+                {"id": "atr14", "indicator": "atr", "period": 14},
+                {"id": "macd", "indicator": "macd", "results": 5},
+                {"id": "rsi14", "indicator": "rsi", "period": 14, "results": 5}
+            ]
 
-        bulk_4h = self.fetch_bulk_indicators(symbol, "4h", indicators_4h)
+        bulk_ht = self.fetch_bulk_indicators(symbol, interval, indicators_ht)
 
-        # Extract values and series
-        result[interval]["ema20"] = self._extract_value(bulk_4h.get("ema20"))
-        result[interval]["ema50"] = self._extract_value(bulk_4h.get("ema50"))
-        result[interval]["atr3"] = self._extract_value(bulk_4h.get("atr3"))
-        result[interval]["atr14"] = self._extract_value(bulk_4h.get("atr14"))
-        result[interval]["macd"] = self._extract_series(bulk_4h.get("macd"), "valueMACD")
-        result[interval]["rsi14"] = self._extract_series(bulk_4h.get("rsi14"), "value")
+        # Extract values and series - basic indicators
+        result[interval]["ema20"] = self._extract_value(bulk_ht.get("ema20"))
+        result[interval]["ema50"] = self._extract_value(bulk_ht.get("ema50"))
+        result[interval]["atr3"] = self._extract_value(bulk_ht.get("atr3"))
+        result[interval]["atr14"] = self._extract_value(bulk_ht.get("atr14"))
+        result[interval]["macd"] = self._extract_series(bulk_ht.get("macd"), "valueMACD")
+        result[interval]["rsi14"] = self._extract_series(bulk_ht.get("rsi14"), "value")
+
+        # Extract extended indicators (paid plan only)
+        if self.is_paid:
+            # Bollinger Bands: {valueUpperBand, valueMiddleBand, valueLowerBand}
+            bbands = bulk_ht.get("bbands", {})
+            if isinstance(bbands, dict):
+                result[interval]["bbands"] = {
+                    "upper": self._extract_value(bbands, "valueUpperBand"),
+                    "middle": self._extract_value(bbands, "valueMiddleBand"),
+                    "lower": self._extract_value(bbands, "valueLowerBand"),
+                }
+            # Supertrend: {value, valueSupertrend, valueAdvice}
+            supertrend = bulk_ht.get("supertrend", {})
+            if isinstance(supertrend, dict):
+                result[interval]["supertrend"] = {
+                    "value": self._extract_value(supertrend, "valueSupertrend"),
+                    "advice": supertrend.get("valueAdvice"),  # "buy" or "sell"
+                }
+            # Stochastic RSI: {valueFastK, valueFastD}
+            stochrsi = bulk_ht.get("stochrsi", {})
+            if isinstance(stochrsi, dict):
+                result[interval]["stochrsi"] = {
+                    "k": self._extract_value(stochrsi, "valueFastK"),
+                    "d": self._extract_value(stochrsi, "valueFastD"),
+                }
+            # ADX: {value}
+            result[interval]["adx"] = self._extract_value(bulk_ht.get("adx"))
+            # OBV: {value}
+            result[interval]["obv"] = self._extract_value(bulk_ht.get("obv"))
 
         # Cache the results
         if self.enable_cache and self.cache:
