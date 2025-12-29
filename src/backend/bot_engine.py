@@ -1226,10 +1226,15 @@ class TradingBotEngine:
                             funding = await self.hyperliquid.get_funding_rate(asset)
 
                             indicators = self.taapi.fetch_asset_indicators(asset)
-                            
+
+                            # Wait between assets only on free TAAPI plan
                             if idx < len(self.assets) - 1:
-                                self.logger.info(f"Waiting 15s before fetching next asset (TAAPI rate limit)...")
-                                await asyncio.sleep(15)
+                                is_taapi_paid = CONFIG.get("taapi_plan", "free").lower() == "paid"
+                                if not is_taapi_paid:
+                                    self.logger.info(f"Waiting 15s before fetching next asset (TAAPI rate limit)...")
+                                    await asyncio.sleep(15)
+                                else:
+                                    await asyncio.sleep(0.5)  # Small delay for paid plan
                             
                             ema20_5m_series = indicators["5m"].get("ema20", [])
                             macd_5m_series = indicators["5m"].get("macd", [])
@@ -1245,7 +1250,14 @@ class TradingBotEngine:
                             lt_macd_series = lt_indicators.get("macd", [])
                             lt_rsi_series = lt_indicators.get("rsi14", [])
 
-                            market_sections.append({
+                            # Extended indicators (paid TAAPI plan only)
+                            lt_bbands = lt_indicators.get("bbands", {})
+                            lt_supertrend = lt_indicators.get("supertrend", {})
+                            lt_stochrsi = lt_indicators.get("stochrsi", {})
+                            lt_adx = lt_indicators.get("adx")
+                            lt_obv = lt_indicators.get("obv")
+
+                            market_data = {
                                 "asset": asset,
                                 "current_price": current_price,
                                 "intraday": {
@@ -1272,7 +1284,21 @@ class TradingBotEngine:
                                 "funding_rate": funding,
                                 "funding_annualized_pct": funding * 24 * 365 * 100 if funding else None,
                                 "recent_mid_prices": [p['mid'] for p in list(self.price_history[asset])[-10:]]
-                            })
+                            }
+
+                            # Add extended indicators if available (paid plan)
+                            if lt_bbands:
+                                market_data["long_term"]["bbands"] = lt_bbands
+                            if lt_supertrend:
+                                market_data["long_term"]["supertrend"] = lt_supertrend
+                            if lt_stochrsi:
+                                market_data["long_term"]["stochrsi"] = lt_stochrsi
+                            if lt_adx is not None:
+                                market_data["long_term"]["adx"] = lt_adx
+                            if lt_obv is not None:
+                                market_data["long_term"]["obv"] = lt_obv
+
+                            market_sections.append(market_data)
 
                         except Exception as e:
                             self.logger.error(f"Error gathering market data for {asset}: {e}")
