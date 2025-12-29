@@ -288,6 +288,168 @@ class BotService:
         """Get list of symbols from last scan (for trading)."""
         return [o['symbol'] for o in self.last_scan_results]
 
+    def get_trading_opportunities(self, min_score: float = 25) -> List[Dict]:
+        """
+        Get actionable trading opportunities (excluding core coins and open positions).
+
+        Args:
+            min_score: Minimum score threshold for opportunities
+
+        Returns:
+            List of opportunities that can be traded
+        """
+        if not self.scanner:
+            return []
+
+        # Get symbols to exclude
+        exclude_symbols = set()
+
+        # Exclude core coins (already traded by bot)
+        core_coins = self.config.get('core_coins', [])
+        exclude_symbols.update(core_coins)
+
+        # Exclude coins with open positions
+        state = self.get_state()
+        for pos in state.positions:
+            symbol = pos.get('symbol', '')
+            if symbol:
+                exclude_symbols.add(symbol)
+
+        self.logger.info(f"Scanner excluding: {exclude_symbols}")
+
+        return self.scanner.get_trading_opportunities(
+            exclude_symbols=list(exclude_symbols),
+            min_score=min_score,
+            signals_only=True  # Only LONG/SHORT, no NEUTRAL
+        )
+
+    async def execute_scanner_trades(
+        self,
+        opportunities: List[Dict] = None,
+        max_trades: int = 3,
+        allocation_per_trade: float = 20.0
+    ) -> List[Dict]:
+        """
+        Execute trades on scanner opportunities.
+
+        Args:
+            opportunities: List of opportunities to trade (uses get_trading_opportunities if None)
+            max_trades: Maximum number of trades to execute
+            allocation_per_trade: USD allocation per trade
+
+        Returns:
+            List of executed trade results
+        """
+        from src.backend.trading.hyperliquid_api import HyperliquidAPI
+
+        if opportunities is None:
+            opportunities = self.get_trading_opportunities()
+
+        if not opportunities:
+            self.logger.info("No trading opportunities found")
+            return []
+
+        # Limit to max_trades
+        opportunities = opportunities[:max_trades]
+
+        results = []
+        hyperliquid = HyperliquidAPI()
+
+        for opp in opportunities:
+            symbol = opp['symbol']
+            signal = opp['signal']
+            score = opp['score']
+            price = opp['price']
+
+            try:
+                # Determine side based on signal
+                is_long = signal == "LONG"
+
+                # Calculate size based on allocation
+                if price and price > 0:
+                    size = allocation_per_trade / price
+                else:
+                    self.logger.warning(f"Invalid price for {symbol}: {price}")
+                    continue
+
+                # Calculate TP/SL based on signal direction
+                # TP: 3% profit, SL: 1.5% loss
+                if is_long:
+                    tp_price = price * 1.03
+                    sl_price = price * 0.985
+                else:
+                    tp_price = price * 0.97
+                    sl_price = price * 1.015
+
+                self.logger.info(
+                    f"Scanner trade: {signal} {symbol} | "
+                    f"Size: {size:.6f} | Price: ${price:.2f} | "
+                    f"TP: ${tp_price:.2f} | SL: ${sl_price:.2f} | Score: {score}"
+                )
+
+                # Execute the trade
+                result = await hyperliquid.place_order(
+                    symbol=symbol,
+                    is_buy=is_long,
+                    size=size,
+                    order_type="market",
+                    reduce_only=False
+                )
+
+                if result and result.get('status') == 'ok':
+                    # Place TP order
+                    await hyperliquid.place_order(
+                        symbol=symbol,
+                        is_buy=not is_long,  # Opposite side for TP
+                        size=size,
+                        order_type="limit",
+                        price=tp_price,
+                        reduce_only=True
+                    )
+
+                    # Place SL order
+                    await hyperliquid.place_order(
+                        symbol=symbol,
+                        is_buy=not is_long,
+                        size=size,
+                        order_type="stop",
+                        price=sl_price,
+                        reduce_only=True
+                    )
+
+                    trade_result = {
+                        'symbol': symbol,
+                        'signal': signal,
+                        'size': size,
+                        'price': price,
+                        'tp_price': tp_price,
+                        'sl_price': sl_price,
+                        'score': score,
+                        'status': 'executed',
+                        'result': result
+                    }
+                    results.append(trade_result)
+                    self._add_event(f"🎯 Scanner {signal}: {symbol} @ ${price:.2f} (Score: {score})")
+                else:
+                    self.logger.error(f"Failed to execute scanner trade for {symbol}: {result}")
+                    results.append({
+                        'symbol': symbol,
+                        'signal': signal,
+                        'status': 'failed',
+                        'error': str(result)
+                    })
+
+            except Exception as e:
+                self.logger.error(f"Error executing scanner trade for {symbol}: {e}")
+                results.append({
+                    'symbol': symbol,
+                    'signal': signal,
+                    'status': 'error',
+                    'error': str(e)
+                })
+
+        return results
+
     async def update_tradeable_assets(self) -> List[str]:
         """
         Run scanner and update the assets to trade.

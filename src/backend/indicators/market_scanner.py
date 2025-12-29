@@ -351,6 +351,43 @@ class MarketScanner:
         """Get last scan as list of dicts."""
         return [o.to_dict() for o in self._last_scan_results]
 
+    def get_trading_opportunities(
+        self,
+        exclude_symbols: List[str] = None,
+        min_score: float = 20,
+        signals_only: bool = True
+    ) -> List[Dict]:
+        """
+        Get actionable trading opportunities from last scan.
+
+        Args:
+            exclude_symbols: Symbols to exclude (core coins, open positions)
+            min_score: Minimum score threshold
+            signals_only: Only return LONG/SHORT signals (exclude NEUTRAL)
+
+        Returns:
+            List of opportunities ready to trade
+        """
+        exclude = set(exclude_symbols or [])
+        opportunities = []
+
+        for opp in self._last_scan_results:
+            # Skip excluded symbols
+            if opp.symbol in exclude:
+                continue
+
+            # Skip low score
+            if opp.score < min_score:
+                continue
+
+            # Skip neutral if signals_only
+            if signals_only and opp.signal == "NEUTRAL":
+                continue
+
+            opportunities.append(opp.to_dict())
+
+        return opportunities
+
 
 # ===== FACTORY FUNCTION =====
 
