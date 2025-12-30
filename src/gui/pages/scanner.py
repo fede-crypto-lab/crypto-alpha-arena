@@ -2,7 +2,6 @@
 Scanner Page - Universal market opportunity scanner with multi-source data
 """
 
-import asyncio
 from nicegui import ui
 from src.gui.services.bot_service import BotService
 from src.gui.services.state_manager import StateManager
@@ -319,6 +318,6 @@ def create_scanner(bot_service: BotService, state_manager: StateManager):
         finally:
             trade_btn.props('disabled=false')
 
-    # Connect buttons using on_click (sync wrapper)
-    scan_btn.on_click(lambda: asyncio.create_task(do_scan()))
-    trade_btn.on_click(lambda: asyncio.create_task(do_trade()))
+    # Connect buttons - use async handlers directly (NiceGUI handles this)
+    scan_btn.on_click(do_scan)
+    trade_btn.on_click(do_trade)
