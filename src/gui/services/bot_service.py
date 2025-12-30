@@ -485,12 +485,34 @@ class BotService:
                 )
 
                 # Execute the trade using correct API methods
+                # Use higher slippage (5%) for scanner trades on potentially low-liquidity coins
+                scanner_slippage = 0.05
                 if is_long:
-                    result = await hyperliquid.place_buy_order(symbol, size)
+                    result = await hyperliquid.place_buy_order(symbol, size, slippage=scanner_slippage)
                 else:
-                    result = await hyperliquid.place_sell_order(symbol, size)
+                    result = await hyperliquid.place_sell_order(symbol, size, slippage=scanner_slippage)
 
+                # Check if order was actually filled (not just submitted)
+                order_filled = False
                 if result and result.get('status') == 'ok':
+                    response_data = result.get('response', {}).get('data', {})
+                    statuses = response_data.get('statuses', [])
+                    for status in statuses:
+                        if 'filled' in status:
+                            order_filled = True
+                            self.logger.info(f"✅ {symbol} entry order FILLED: {status.get('filled', {})}")
+                            break
+                        elif 'resting' in status:
+                            # Order is resting (limit order waiting) - for IOC this shouldn't happen
+                            self.logger.warning(f"⚠️ {symbol} order resting (not filled): {status}")
+                        elif 'error' in status:
+                            self.logger.error(f"❌ {symbol} order error: {status.get('error')}")
+
+                    if not statuses:
+                        # No statuses means order was likely rejected/cancelled
+                        self.logger.warning(f"⚠️ {symbol} no order status returned - likely cancelled/rejected")
+
+                if order_filled:
                     self.logger.info(f"✅ {symbol} entry order placed successfully")
 
                     # Place TP order
@@ -531,12 +553,13 @@ class BotService:
                     results.append(trade_result)
                     self._add_event(f"🎯 Scanner {signal}: {symbol} @ ${price:.2f} (Score: {score})")
                 else:
-                    self.logger.error(f"Failed to execute scanner trade for {symbol}: {result}")
+                    # Order not filled (IOC cancelled due to no liquidity or rejected)
+                    self.logger.warning(f"⚠️ {symbol} order NOT FILLED - no position opened (low liquidity?)")
                     results.append({
                         'symbol': symbol,
                         'signal': signal,
-                        'status': 'failed',
-                        'error': str(result)
+                        'status': 'not_filled',
+                        'error': 'Order not filled - possibly low liquidity'
                     })
 
             except Exception as e:
