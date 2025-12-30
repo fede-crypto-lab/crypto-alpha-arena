@@ -571,6 +571,35 @@ class BotService:
                     'error': str(e)
                 })
 
+        # After executing trades, sync positions from exchange so GUI shows them
+        if any(r.get('status') == 'executed' for r in results):
+            self.logger.info("📊 Syncing positions after scanner trades...")
+            await self.refresh_market_data()
+
+            # Write successful trades to diary.jsonl for history
+            from pathlib import Path
+            import json
+            diary_path = Path("data/diary.jsonl")
+            diary_path.parent.mkdir(parents=True, exist_ok=True)
+
+            for r in results:
+                if r.get('status') == 'executed':
+                    entry = {
+                        'timestamp': datetime.utcnow().isoformat(),
+                        'asset': r['symbol'],
+                        'action': 'buy' if r['signal'] == 'LONG' else 'sell',
+                        'source': 'scanner',
+                        'price': r['price'],
+                        'amount': r['size'],
+                        'tp_price': r['tp_price'],
+                        'sl_price': r['sl_price'],
+                        'score': r['score'],
+                        'rationale': f"Scanner {r['signal']} signal with score {r['score']}"
+                    }
+                    with open(diary_path, 'a', encoding='utf-8') as f:
+                        f.write(json.dumps(entry) + '\n')
+                    self.logger.info(f"📝 Wrote scanner trade to diary: {r['symbol']}")
+
         return results
 
     async def update_tradeable_assets(self) -> List[str]:
