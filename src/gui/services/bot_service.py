@@ -424,12 +424,17 @@ class BotService:
         """
         from src.backend.trading.hyperliquid_api import HyperliquidAPI
 
+        self.logger.info(f"🎯 execute_scanner_trades called - max_trades={max_trades}, allocation=${allocation_per_trade}")
+
         if opportunities is None:
+            self.logger.info("Fetching opportunities from get_trading_opportunities()")
             opportunities = self.get_trading_opportunities()
 
         if not opportunities:
-            self.logger.info("No trading opportunities found")
+            self.logger.warning("No trading opportunities found - returning empty list")
             return []
+
+        self.logger.info(f"Got {len(opportunities)} opportunities to process")
 
         # Limit to max_trades
         opportunities = opportunities[:max_trades]
@@ -440,21 +445,28 @@ class BotService:
         # CRITICAL: Fetch metadata to populate _meta_cache for proper size rounding
         await hyperliquid.get_meta_data()
 
-        for opp in opportunities:
-            symbol = opp['symbol']
-            signal = opp['signal']
-            score = opp['score']
-            price = opp['price']
+        for i, opp in enumerate(opportunities):
+            symbol = opp.get('symbol', 'UNKNOWN')
+            signal = opp.get('signal', 'NEUTRAL')
+            score = opp.get('score', 0)
+            price = opp.get('price', 0)
+
+            self.logger.info(f"Processing opportunity {i+1}/{len(opportunities)}: {symbol} {signal} @ ${price} (score={score})")
 
             try:
                 # Determine side based on signal
                 is_long = signal == "LONG"
 
+                # Skip neutral signals
+                if signal not in ("LONG", "SHORT"):
+                    self.logger.warning(f"Skipping {symbol}: signal is {signal}, not LONG/SHORT")
+                    continue
+
                 # Calculate size based on allocation
                 if price and price > 0:
                     size = allocation_per_trade / price
                 else:
-                    self.logger.warning(f"Invalid price for {symbol}: {price}")
+                    self.logger.warning(f"Invalid price for {symbol}: {price} - skipping")
                     continue
 
                 # Calculate TP/SL based on signal direction
@@ -479,21 +491,31 @@ class BotService:
                     result = await hyperliquid.place_sell_order(symbol, size)
 
                 if result and result.get('status') == 'ok':
+                    self.logger.info(f"✅ {symbol} entry order placed successfully")
+
                     # Place TP order
-                    await hyperliquid.place_take_profit(
-                        asset=symbol,
-                        is_buy=is_long,
-                        amount=size,
-                        tp_price=tp_price
-                    )
+                    try:
+                        tp_result = await hyperliquid.place_take_profit(
+                            asset=symbol,
+                            is_buy=is_long,
+                            amount=size,
+                            tp_price=tp_price
+                        )
+                        self.logger.info(f"✅ {symbol} TP order placed @ ${tp_price:.4f}")
+                    except Exception as tp_err:
+                        self.logger.error(f"❌ {symbol} TP order failed: {tp_err}")
 
                     # Place SL order
-                    await hyperliquid.place_stop_loss(
-                        asset=symbol,
-                        is_buy=is_long,
-                        amount=size,
-                        sl_price=sl_price
-                    )
+                    try:
+                        sl_result = await hyperliquid.place_stop_loss(
+                            asset=symbol,
+                            is_buy=is_long,
+                            amount=size,
+                            sl_price=sl_price
+                        )
+                        self.logger.info(f"✅ {symbol} SL order placed @ ${sl_price:.4f}")
+                    except Exception as sl_err:
+                        self.logger.error(f"❌ {symbol} SL order failed: {sl_err}")
 
                     trade_result = {
                         'symbol': symbol,
