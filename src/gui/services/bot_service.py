@@ -437,6 +437,9 @@ class BotService:
         results = []
         hyperliquid = HyperliquidAPI()
 
+        # CRITICAL: Fetch metadata to populate _meta_cache for proper size rounding
+        await hyperliquid.get_meta_data()
+
         for opp in opportunities:
             symbol = opp['symbol']
             signal = opp['signal']
