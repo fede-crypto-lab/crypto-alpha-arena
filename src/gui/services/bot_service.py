@@ -470,18 +470,49 @@ class BotService:
                     continue
 
                 # Calculate TP/SL based on signal direction
-                # TP: 3% profit, SL: 1.5% loss
+                # For low-priced coins, use tick-based TP/SL to avoid rounding issues
+                # Get tick size from exchange metadata
+                tick_size = 0.01  # Default
+                try:
+                    meta = await hyperliquid.get_meta_and_ctxs()
+                    if meta and len(meta) > 0:
+                        universe = meta[0].get('universe', [])
+                        for asset_info in universe:
+                            if asset_info.get('name') == symbol:
+                                # szDecimals determines precision
+                                tick_size = 10 ** (-asset_info.get('szDecimals', 2))
+                                break
+                except Exception:
+                    pass
+
+                # Use percentage-based TP/SL, but ensure minimum tick distance
                 if is_long:
                     tp_price = price * 1.03
                     sl_price = price * 0.985
+                    # Ensure TP is at least 2 ticks above entry
+                    min_tp = price + (tick_size * 2)
+                    if tp_price < min_tp:
+                        tp_price = min_tp
+                    # Ensure SL is at least 2 ticks below entry
+                    max_sl = price - (tick_size * 2)
+                    if sl_price > max_sl:
+                        sl_price = max_sl
                 else:
                     tp_price = price * 0.97
                     sl_price = price * 1.015
+                    # Ensure TP is at least 2 ticks below entry (SHORT)
+                    max_tp = price - (tick_size * 2)
+                    if tp_price > max_tp:
+                        tp_price = max_tp
+                    # Ensure SL is at least 2 ticks above entry
+                    min_sl = price + (tick_size * 2)
+                    if sl_price < min_sl:
+                        sl_price = min_sl
 
                 self.logger.info(
                     f"Scanner trade: {signal} {symbol} | "
-                    f"Size: {size:.6f} | Price: ${price:.2f} | "
-                    f"TP: ${tp_price:.2f} | SL: ${sl_price:.2f} | Score: {score}"
+                    f"Size: {size:.6f} | Price: ${price:.4f} | "
+                    f"TP: ${tp_price:.4f} | SL: ${sl_price:.4f} | Score: {score}"
                 )
 
                 # Execute the trade using correct API methods
@@ -551,7 +582,7 @@ class BotService:
                         'result': result
                     }
                     results.append(trade_result)
-                    self._add_event(f"🎯 Scanner {signal}: {symbol} @ ${price:.2f} (Score: {score})")
+                    self._add_event(f"🎯 Scanner {signal}: {symbol} @ ${price:.4f} (Score: {score:.0f})")
                 else:
                     # Order not filled (IOC cancelled due to no liquidity or rejected)
                     self.logger.warning(f"⚠️ {symbol} order NOT FILLED - no position opened (low liquidity?)")
