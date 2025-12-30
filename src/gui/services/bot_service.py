@@ -11,8 +11,9 @@ from datetime import datetime
 
 from src.backend.bot_engine import TradingBotEngine, BotState
 from src.backend.config_loader import CONFIG
-# Lazy import to avoid startup issues
+# Lazy imports to avoid startup issues
 # from src.backend.indicators.market_scanner import MarketScanner, HyperliquidDataProvider
+# from src.backend.indicators.universal_scanner import UniversalScanner
 
 
 class BotService:
@@ -25,9 +26,11 @@ class BotService:
         self.recent_events: List[Dict] = []
         self.logger = logging.getLogger(__name__)
 
-        # Market scanner (initialized lazily)
-        self.scanner: Optional[MarketScanner] = None
+        # Market scanners (initialized lazily)
+        self.scanner = None  # Old Hyperliquid-only scanner
+        self.universal_scanner = None  # New market-wide scanner
         self.last_scan_results: List[Dict] = []
+        self.use_universal_scanner: bool = True  # Use market-wide scanner by default
 
         # Configuration
         # Top assets by market cap - depends on TAAPI plan
@@ -249,16 +252,56 @@ class BotService:
         except Exception as e:
             self.logger.error(f"Failed to initialize scanner: {e}")
 
-    async def scan_market(self, max_dynamic: int = None) -> List[Dict]:
+    async def init_universal_scanner(self):
+        """Initialize the universal market-wide scanner."""
+        if self.universal_scanner:
+            return  # Already initialized
+
+        try:
+            from src.backend.trading.hyperliquid_api import HyperliquidAPI
+            from src.backend.indicators.universal_scanner import UniversalScanner
+            from src.backend.indicators.taapi_client import TAAPIClient
+
+            # Initialize components
+            hyperliquid = HyperliquidAPI()
+
+            # Only use TAAPI if we have a paid plan (to avoid rate limits)
+            taapi_client = None
+            if CONFIG.get('taapi_plan', 'free').lower() == 'paid':
+                taapi_client = TAAPIClient()
+                self.logger.info("Universal scanner: TAAPI enabled (paid plan)")
+
+            self.universal_scanner = UniversalScanner(
+                exchange_api=hyperliquid,
+                taapi_client=taapi_client,
+                core_coins=self.config['core_coins'],
+                use_taapi=(taapi_client is not None)
+            )
+            self.logger.info(f"Universal scanner initialized with core coins: {self.config['core_coins']}")
+        except Exception as e:
+            self.logger.error(f"Failed to initialize universal scanner: {e}")
+
+    async def scan_market(self, max_dynamic: int = None, use_universal: bool = None) -> List[Dict]:
         """
         Scan the market for trading opportunities.
 
         Args:
             max_dynamic: Max dynamic coins to include (uses config if None)
+            use_universal: Use market-wide scanner (CoinGecko + exchange check)
 
         Returns:
             List of opportunity dicts sorted by score
         """
+        # Determine which scanner to use
+        use_univ = use_universal if use_universal is not None else self.use_universal_scanner
+
+        if use_univ:
+            return await self._scan_universal(max_dynamic)
+        else:
+            return await self._scan_hyperliquid(max_dynamic)
+
+    async def _scan_hyperliquid(self, max_dynamic: int = None) -> List[Dict]:
+        """Scan using Hyperliquid-only scanner."""
         if not self.scanner:
             await self.init_scanner()
 
@@ -273,12 +316,41 @@ class BotService:
                 include_core=True
             )
             self.last_scan_results = [o.to_dict() for o in opportunities]
-            self._add_event(f"🔍 Market scan: {len(opportunities)} opportunities found")
+            self._add_event(f"🔍 Market scan (HL): {len(opportunities)} opportunities found")
             return self.last_scan_results
         except Exception as e:
             self.logger.error(f"Market scan failed: {e}")
             self._add_event(f"❌ Scan failed: {str(e)}", level="error")
             return []
+
+    async def _scan_universal(self, max_dynamic: int = None) -> List[Dict]:
+        """Scan using universal market-wide scanner (CoinGecko + exchange check)."""
+        if not self.universal_scanner:
+            await self.init_universal_scanner()
+
+        if not self.universal_scanner:
+            self.logger.error("Universal scanner not available")
+            # Fallback to Hyperliquid scanner
+            return await self._scan_hyperliquid(max_dynamic)
+
+        try:
+            max_results = (max_dynamic or self.config['max_dynamic_coins']) + len(self.config['core_coins'])
+            opportunities = await self.universal_scanner.scan_market(
+                top_n=100,  # Scan top 100 coins by market cap
+                max_results=max_results,
+                include_non_tradeable=True  # Show all, mark tradeable
+            )
+            self.last_scan_results = [o.to_dict() for o in opportunities]
+
+            # Count tradeable
+            tradeable = len([o for o in opportunities if o.exchange_available])
+            self._add_event(f"🌐 Market scan: {len(opportunities)} found, {tradeable} tradeable")
+            return self.last_scan_results
+        except Exception as e:
+            self.logger.error(f"Universal scan failed: {e}")
+            self._add_event(f"❌ Scan failed: {str(e)}", level="error")
+            # Fallback to Hyperliquid scanner
+            return await self._scan_hyperliquid(max_dynamic)
 
     def get_scan_results(self) -> List[Dict]:
         """Get last scan results."""
@@ -288,19 +360,17 @@ class BotService:
         """Get list of symbols from last scan (for trading)."""
         return [o['symbol'] for o in self.last_scan_results]
 
-    def get_trading_opportunities(self, min_score: float = 25) -> List[Dict]:
+    def get_trading_opportunities(self, min_score: float = 25, only_tradeable: bool = True) -> List[Dict]:
         """
         Get actionable trading opportunities (excluding core coins and open positions).
 
         Args:
             min_score: Minimum score threshold for opportunities
+            only_tradeable: Only return coins available on exchange
 
         Returns:
             List of opportunities that can be traded
         """
-        if not self.scanner:
-            return []
-
         # Get symbols to exclude
         exclude_symbols = set()
 
@@ -317,11 +387,23 @@ class BotService:
 
         self.logger.info(f"Scanner excluding: {exclude_symbols}")
 
-        return self.scanner.get_trading_opportunities(
-            exclude_symbols=list(exclude_symbols),
-            min_score=min_score,
-            signals_only=True  # Only LONG/SHORT, no NEUTRAL
-        )
+        # Use universal scanner if available
+        if self.universal_scanner:
+            return self.universal_scanner.get_trading_opportunities(
+                exclude_symbols=list(exclude_symbols),
+                min_score=min_score,
+                only_tradeable=only_tradeable
+            )
+
+        # Fallback to old scanner
+        if self.scanner:
+            return self.scanner.get_trading_opportunities(
+                exclude_symbols=list(exclude_symbols),
+                min_score=min_score,
+                signals_only=True  # Only LONG/SHORT, no NEUTRAL
+            )
+
+        return []
 
     async def execute_scanner_trades(
         self,
