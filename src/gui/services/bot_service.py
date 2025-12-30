@@ -443,7 +443,7 @@ class BotService:
         hyperliquid = HyperliquidAPI()
 
         # CRITICAL: Fetch metadata to populate _meta_cache for proper size rounding
-        await hyperliquid.get_meta_data()
+        await hyperliquid.get_meta_and_ctxs()
 
         for i, opp in enumerate(opportunities):
             symbol = opp.get('symbol', 'UNKNOWN')
