@@ -8,6 +8,7 @@ Docs: https://www.coingecko.com/en/api/documentation
 import asyncio
 import aiohttp
 import logging
+import time
 from typing import List, Dict, Optional
 from datetime import datetime, timedelta
 from dataclasses import dataclass
@@ -71,16 +72,19 @@ class CoinGeckoClient:
         "LEO", "OKB", "CRO", "KCS", "HT", "FTT",  # Exchange tokens
     }
 
-    def __init__(self, cache_ttl: int = 60):
+    def __init__(self, cache_ttl: int = 300):
         """
         Initialize CoinGecko client.
 
         Args:
-            cache_ttl: Cache time-to-live in seconds (default 60s)
+            cache_ttl: Cache time-to-live in seconds (default 300s = 5 min)
         """
         self.cache_ttl = cache_ttl
         self._cache: Dict[str, tuple] = {}  # {key: (data, timestamp)}
+        self._stale_cache: Dict[str, any] = {}  # Fallback for rate limits
         self._session: Optional[aiohttp.ClientSession] = None
+        self._last_request_time: float = 0
+        self._min_request_interval: float = 2.0  # Min 2s between requests
 
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create aiohttp session"""
@@ -106,10 +110,25 @@ class CoinGeckoClient:
     def _set_cache(self, key: str, data: any):
         """Set cache with current timestamp"""
         self._cache[key] = (data, datetime.now())
+        self._stale_cache[key] = data  # Keep as fallback
+
+    def _get_stale_cache(self, key: str) -> Optional[any]:
+        """Get stale cache data (for rate limit fallback)"""
+        return self._stale_cache.get(key)
 
     async def _request(self, endpoint: str, params: Dict = None) -> Optional[Dict]:
-        """Make API request with error handling"""
+        """Make API request with throttling and error handling"""
         try:
+            # Throttle requests to avoid rate limit
+            now = time.time()
+            elapsed = now - self._last_request_time
+            if elapsed < self._min_request_interval:
+                wait_time = self._min_request_interval - elapsed
+                logger.debug(f"Throttling CoinGecko request, waiting {wait_time:.1f}s")
+                await asyncio.sleep(wait_time)
+
+            self._last_request_time = time.time()
+
             session = await self._get_session()
             url = f"{self.BASE_URL}{endpoint}"
 
@@ -117,9 +136,9 @@ class CoinGeckoClient:
                 if response.status == 200:
                     return await response.json()
                 elif response.status == 429:
-                    logger.warning("CoinGecko rate limit hit, waiting 60s...")
-                    await asyncio.sleep(60)
-                    return await self._request(endpoint, params)
+                    # Don't block - return None and let caller use stale cache
+                    logger.warning("CoinGecko rate limit hit - using cached data")
+                    return None
                 else:
                     logger.error(f"CoinGecko API error: {response.status}")
                     return None
@@ -161,7 +180,12 @@ class CoinGeckoClient:
         })
 
         if not data:
-            logger.error("Failed to fetch top coins from CoinGecko")
+            # Try stale cache as fallback
+            stale = self._get_stale_cache(cache_key)
+            if stale:
+                logger.warning("Using stale cache for top coins")
+                return stale
+            logger.error("Failed to fetch top coins from CoinGecko (no cache)")
             return []
 
         coins = []
