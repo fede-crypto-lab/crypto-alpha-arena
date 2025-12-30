@@ -469,34 +469,27 @@ class BotService:
                     f"TP: ${tp_price:.2f} | SL: ${sl_price:.2f} | Score: {score}"
                 )
 
-                # Execute the trade
-                result = await hyperliquid.place_order(
-                    symbol=symbol,
-                    is_buy=is_long,
-                    size=size,
-                    order_type="market",
-                    reduce_only=False
-                )
+                # Execute the trade using correct API methods
+                if is_long:
+                    result = await hyperliquid.place_buy_order(symbol, size)
+                else:
+                    result = await hyperliquid.place_sell_order(symbol, size)
 
                 if result and result.get('status') == 'ok':
                     # Place TP order
-                    await hyperliquid.place_order(
-                        symbol=symbol,
-                        is_buy=not is_long,  # Opposite side for TP
-                        size=size,
-                        order_type="limit",
-                        price=tp_price,
-                        reduce_only=True
+                    await hyperliquid.place_take_profit(
+                        asset=symbol,
+                        is_buy=is_long,
+                        amount=size,
+                        tp_price=tp_price
                     )
 
                     # Place SL order
-                    await hyperliquid.place_order(
-                        symbol=symbol,
-                        is_buy=not is_long,
-                        size=size,
-                        order_type="stop",
-                        price=sl_price,
-                        reduce_only=True
+                    await hyperliquid.place_stop_loss(
+                        asset=symbol,
+                        is_buy=is_long,
+                        amount=size,
+                        sl_price=sl_price
                     )
 
                     trade_result = {
