@@ -1209,8 +1209,16 @@ class TradingBotEngine:
                     }
 
                     # ===== PHASE 8: Gather Market Data =====
+                    # Include core assets + any non-core open positions
+                    position_symbols = {p['symbol'] for p in enriched_positions}
+                    non_core_positions = position_symbols - set(self.assets)
+                    assets_to_evaluate = list(self.assets) + list(non_core_positions)
+
+                    if non_core_positions:
+                        self.logger.info(f"📊 Evaluating {len(self.assets)} core + {len(non_core_positions)} scanner positions: {list(non_core_positions)}")
+
                     market_sections = []
-                    for idx, asset in enumerate(self.assets):
+                    for idx, asset in enumerate(assets_to_evaluate):
                         try:
                             await asyncio.sleep(0.3)
                             current_price = await self.hyperliquid.get_current_price(asset)
@@ -1229,7 +1237,7 @@ class TradingBotEngine:
                             indicators = self.taapi.fetch_asset_indicators(asset)
 
                             # Wait between assets - shorter for paid TAAPI plan
-                            if idx < len(self.assets) - 1:
+                            if idx < len(assets_to_evaluate) - 1:
                                 is_taapi_paid = CONFIG.get("taapi_plan", "free").lower() == "paid"
                                 if not is_taapi_paid:
                                     self.logger.info(f"Waiting 15s before fetching next asset (TAAPI rate limit)...")
