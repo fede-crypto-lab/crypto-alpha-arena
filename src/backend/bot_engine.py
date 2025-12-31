@@ -1424,6 +1424,7 @@ class TradingBotEngine:
                         f.write(context + "\n")
 
                     # ===== PHASE 10: Get LLM Decision =====
+                    self.logger.info(f"🤖 Asking LLM for decisions on {len(assets_to_evaluate)} assets: {assets_to_evaluate}")
                     decisions = await asyncio.to_thread(
                         self.agent.decide_trade, assets_to_evaluate, context
                     )
