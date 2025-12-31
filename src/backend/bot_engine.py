@@ -1220,6 +1220,10 @@ class TradingBotEngine:
                     market_sections = []
                     for idx, asset in enumerate(assets_to_evaluate):
                         try:
+                            # Initialize price_history for non-core assets dynamically
+                            if asset not in self.price_history:
+                                self.price_history[asset] = deque(maxlen=60)
+
                             await asyncio.sleep(0.3)
                             current_price = await self.hyperliquid.get_current_price(asset)
 
