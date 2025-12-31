@@ -11,7 +11,8 @@ from src.gui.services.state_manager import StateManager
 from src.backend.config_loader import CONFIG
 
 # Import pages
-from src.gui.pages import dashboard, positions, history, market, reasoning, settings, recommendations, scanner
+from src.gui.pages import dashboard, positions, history, market, reasoning, recommendations, scanner
+# settings page removed for security (API keys visible from outside)
 
 logger = logging.getLogger(__name__)
 
@@ -187,5 +188,4 @@ def navigate(page: str):
             market.create_market(bot_service, state_manager)
         elif page == 'Reasoning':
             reasoning.create_reasoning(bot_service, state_manager)
-        elif page == 'Settings':
-            settings.create_settings(bot_service, state_manager)
+        # Settings page removed for security

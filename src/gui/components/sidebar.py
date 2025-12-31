@@ -15,7 +15,7 @@ def create_sidebar():
             ('/history', '📜 History', 'Trade history and logs'),
             ('/market', '📈 Market', 'Market data and indicators'),
             ('/reasoning', '🧠 AI Reasoning', 'LLM decision logic'),
-            ('/settings', '⚙️ Settings', 'Configuration and API keys'),
+            # Settings page removed for security (API keys visible)
         ]
 
         for path, label, tooltip in menu_items:
