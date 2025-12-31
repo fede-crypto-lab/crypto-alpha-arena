@@ -1425,7 +1425,7 @@ class TradingBotEngine:
 
                     # ===== PHASE 10: Get LLM Decision =====
                     decisions = await asyncio.to_thread(
-                        self.agent.decide_trade, self.assets, context
+                        self.agent.decide_trade, assets_to_evaluate, context
                     )
 
                     if not isinstance(decisions, dict) or 'trade_decisions' not in decisions:
@@ -1435,7 +1435,7 @@ class TradingBotEngine:
                             "No markdown, no explanation.\n\n" + context
                         )
                         decisions = await asyncio.to_thread(
-                            self.agent.decide_trade, self.assets, strict_context
+                            self.agent.decide_trade, assets_to_evaluate, strict_context
                         )
 
                     trade_decisions = decisions.get('trade_decisions', [])
@@ -1445,7 +1445,7 @@ class TradingBotEngine:
                     ):
                         self.logger.warning("All holds with parse errors, retrying...")
                         decisions = await asyncio.to_thread(
-                            self.agent.decide_trade, self.assets, context
+                            self.agent.decide_trade, assets_to_evaluate, context
                         )
                         trade_decisions = decisions.get('trade_decisions', [])
 
@@ -1460,7 +1460,7 @@ class TradingBotEngine:
                     # ===== PHASE 11: Execute Trades =====
                     for decision in trade_decisions:
                         asset = decision.get('asset')
-                        if asset not in self.assets:
+                        if asset not in assets_to_evaluate:
                             continue
 
                         action = decision.get('action')
