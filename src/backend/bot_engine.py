@@ -422,7 +422,7 @@ class TradingBotEngine:
 
         self.logger.info(f"📊 Generated fallback TP/SL for {asset} {action.upper()}: "
                         f"TP=${tp_price:,.2f}, SL=${sl_price:,.2f} "
-                        f"(ATR={atr:.2f if atr else 'N/A'})")
+                        f"(ATR={f'{atr:.2f}' if atr else 'N/A'})")
 
         return {'tp_price': tp_price, 'sl_price': sl_price}
 
