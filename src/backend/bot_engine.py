@@ -24,7 +24,7 @@ from src.backend.agent.decision_maker import TradingAgent
 from src.backend.config_loader import CONFIG
 from src.backend.indicators.taapi_client import TAAPIClient
 from src.backend.models.trade_proposal import TradeProposal
-from src.backend.trading.hyperliquid_api import HyperliquidAPI
+from src.backend.trading.exchange_factory import create_exchange, get_exchange_name
 from src.backend.utils.prompt_utils import json_default
 
 
@@ -103,7 +103,8 @@ class TradingBotEngine:
         self.logger = logging.getLogger(__name__)
 
         self.taapi = TAAPIClient()
-        self.hyperliquid = HyperliquidAPI()
+        self.hyperliquid = create_exchange()  # Modular: uses EXCHANGE env var
+        self.logger.info(f"Exchange initialized: {get_exchange_name()}")
         self.agent = TradingAgent()
         self.enhanced_context = EnhancedMarketContext(
             sentiment_cache_ttl=3600,

@@ -239,10 +239,10 @@ class BotService:
             return  # Already initialized
 
         try:
-            from src.backend.trading.hyperliquid_api import HyperliquidAPI
+            from src.backend.trading.exchange_factory import create_exchange
             from src.backend.indicators.market_scanner import MarketScanner, HyperliquidDataProvider
 
-            hyperliquid = HyperliquidAPI()
+            hyperliquid = create_exchange()
             provider = HyperliquidDataProvider(hyperliquid)
             self.scanner = MarketScanner(
                 data_provider=provider,
@@ -258,12 +258,12 @@ class BotService:
             return  # Already initialized
 
         try:
-            from src.backend.trading.hyperliquid_api import HyperliquidAPI
+            from src.backend.trading.exchange_factory import create_exchange
             from src.backend.indicators.universal_scanner import UniversalScanner
             from src.backend.indicators.taapi_client import TAAPIClient
 
             # Initialize components
-            hyperliquid = HyperliquidAPI()
+            hyperliquid = create_exchange()
 
             # Only use TAAPI if we have a paid plan (to avoid rate limits)
             taapi_client = None
@@ -422,7 +422,7 @@ class BotService:
         Returns:
             List of executed trade results
         """
-        from src.backend.trading.hyperliquid_api import HyperliquidAPI
+        from src.backend.trading.exchange_factory import create_exchange
 
         self.logger.info(f"🎯 execute_scanner_trades called - max_trades={max_trades}, allocation=${allocation_per_trade}")
 
@@ -440,7 +440,7 @@ class BotService:
         opportunities = opportunities[:max_trades]
 
         results = []
-        hyperliquid = HyperliquidAPI()
+        hyperliquid = create_exchange()
 
         # CRITICAL: Fetch metadata to populate _meta_cache for proper size rounding
         await hyperliquid.get_meta_and_ctxs()
@@ -639,9 +639,9 @@ class BotService:
             except Exception:
                 results['TAAPI'] = False
 
-            # Test Hyperliquid
-            from src.backend.trading.hyperliquid_api import HyperliquidAPI
-            hyperliquid = HyperliquidAPI()
+            # Test exchange (Hyperliquid or Bybit)
+            from src.backend.trading.exchange_factory import create_exchange, get_exchange_name
+            hyperliquid = create_exchange()
             try:
                 price = await hyperliquid.get_current_price("BTC")
                 results['Hyperliquid'] = price is not None and price > 0
@@ -672,9 +672,9 @@ class BotService:
             True if successful, False otherwise
         """
         try:
-            from src.backend.trading.hyperliquid_api import HyperliquidAPI
+            from src.backend.trading.exchange_factory import create_exchange
 
-            hyperliquid = HyperliquidAPI()
+            hyperliquid = create_exchange()
 
             # Fetch account state (balance, positions)
             user_state = await hyperliquid.get_user_state()
@@ -1070,18 +1070,30 @@ class BotService:
                     except Exception as e:
                         self.logger.debug(f"TAAPI test failed: {e}")
 
-            # Test Hyperliquid
-            hl_key = CONFIG.get('hyperliquid_private_key', '')
-            if hl_key and hl_key != 'your_private_key_here':
+            # Test Exchange (Hyperliquid or Bybit)
+            from src.backend.trading.exchange_factory import get_exchange_name
+            exchange_name = get_exchange_name()
+
+            # Check if we have credentials for the configured exchange
+            has_creds = False
+            if exchange_name == 'hyperliquid':
+                hl_key = CONFIG.get('hyperliquid_private_key', '')
+                has_creds = hl_key and hl_key != 'your_private_key_here'
+            elif exchange_name == 'bybit':
+                bybit_key = CONFIG.get('bybit_api_key', '')
+                has_creds = bybit_key and bybit_key != 'your_api_key_here'
+
+            if has_creds:
                 try:
-                    from src.backend.trading.hyperliquid_api import HyperliquidAPI
-                    hl = HyperliquidAPI()
+                    from src.backend.trading.exchange_factory import create_exchange
+                    exchange = create_exchange()
                     # Try to get user state
-                    state = await hl.get_user_state()
+                    state = await exchange.get_user_state()
                     if state:
-                        results['hyperliquid'] = True
+                        results['exchange'] = True
+                        results['exchange_name'] = exchange_name
                 except Exception as e:
-                    self.logger.debug(f"Hyperliquid test failed: {e}")
+                    self.logger.debug(f"Exchange test failed: {e}")
 
             # Test OpenRouter
             or_key = CONFIG.get('openrouter_api_key', '')

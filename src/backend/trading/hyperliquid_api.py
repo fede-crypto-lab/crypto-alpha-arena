@@ -5,6 +5,10 @@ single entry point for submitting trades, managing orders, and retrieving market
 state.  It normalizes retry behaviour, adds logging, and caches metadata so that
 the trading agent can depend on predictable, non-blocking IO.
 
+V6 CHANGES:
+- Now extends BaseExchange for modular exchange support
+- Added extract_oids and get_meta_and_ctxs to interface
+
 V5 CHANGES:
 - Added round_price() method to round prices to exchange tick size
 - Added TICK_SIZES constant with per-asset tick sizes
@@ -13,7 +17,7 @@ V5 CHANGES:
 
 V4 CHANGES:
 - Added response logging and validation for place_take_profit
-- Added response logging and validation for place_stop_loss  
+- Added response logging and validation for place_stop_loss
 - Both methods now log the actual API response and check for errors
 - Added helper method _validate_order_response for consistent validation
 """
@@ -21,8 +25,9 @@ V4 CHANGES:
 import asyncio
 import logging
 import aiohttp
-from typing import TYPE_CHECKING, Dict, Any, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, Any, Optional, Tuple, List
 from src.backend.config_loader import CONFIG
+from src.backend.trading.base_exchange import BaseExchange
 from hyperliquid.exchange import Exchange
 from hyperliquid.info import Info
 from hyperliquid.utils import constants  # For MAINNET/TESTNET
@@ -45,12 +50,14 @@ else:
     Account = _Account
 
 
-class HyperliquidAPI:
+class HyperliquidAPI(BaseExchange):
     """Facade around Hyperliquid SDK clients with async convenience methods.
 
     The class owns wallet credentials, connection configuration, and provides
     coroutine helpers that keep retry semantics and logging consistent across
     the trading agent.
+
+    Extends BaseExchange for modular multi-exchange support.
     """
 
     # ===== TICK SIZES FOR PRICE ROUNDING =====

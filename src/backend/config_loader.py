@@ -84,14 +84,25 @@ def _get_list(name: str, default: list[str] | None = None) -> list[str] | None:
 CONFIG = {
     # Bot behavior
     "autostart_bot": _get_bool("AUTOSTART_BOT", False),  # Auto-start bot on deploy
+
+    # Exchange selection - modular multi-exchange support
+    "exchange": _get_env("EXCHANGE", "hyperliquid"),  # "hyperliquid" or "bybit"
+
     # API keys - not required during module import (checked when bot starts)
     "taapi_api_key": _get_env("TAAPI_API_KEY"),
     "taapi_plan": _get_env("TAAPI_PLAN", "free"),  # "free" or "paid" - controls rate limits and available coins
+
+    # Hyperliquid credentials
     "hyperliquid_private_key": _get_env("HYPERLIQUID_PRIVATE_KEY") or _get_env("LIGHTER_PRIVATE_KEY"),
     "mnemonic": _get_env("MNEMONIC"),
     # Hyperliquid network/base URL overrides
     "hyperliquid_base_url": _get_env("HYPERLIQUID_BASE_URL"),
     "hyperliquid_network": _get_env("HYPERLIQUID_NETWORK", "mainnet"),
+
+    # Bybit credentials (only needed if EXCHANGE=bybit)
+    "bybit_api_key": _get_env("BYBIT_API_KEY"),
+    "bybit_api_secret": _get_env("BYBIT_API_SECRET"),
+    "bybit_network": _get_env("BYBIT_NETWORK", "testnet"),  # "testnet" or "mainnet"
     # LLM via OpenRouter
     "openrouter_api_key": _get_env("OPENROUTER_API_KEY"),
     "openrouter_base_url": _get_env("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1"),
