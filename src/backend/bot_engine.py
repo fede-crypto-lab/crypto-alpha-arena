@@ -26,6 +26,7 @@ from src.backend.indicators.taapi_client import TAAPIClient
 from src.backend.models.trade_proposal import TradeProposal
 from src.backend.trading.exchange_factory import create_exchange, get_exchange_name
 from src.backend.utils.prompt_utils import json_default
+from src.backend.scoring.weighted_scorer import score_all_assets
 
 
 @dataclass
@@ -1399,65 +1400,177 @@ class TradingBotEngine:
                             section["composite_signal"] = "NEUTRAL"
                             section["composite_confidence"] = 50
 
-                    # ===== PHASE 9: Build LLM Context =====
-                    context_payload = OrderedDict([
-                        ("invocation", {
-                            "count": self.invocation_count,
-                            "current_time": datetime.now(UTC).isoformat()
-                        }),
-                        ("account", dashboard),
-                        ("market_data", market_sections),
-                        ("instructions", {
-                            "assets": assets_to_evaluate,
-                            "note": "Follow the system prompt guidelines strictly"
-                        })
-                    ])
-                    context = json.dumps(context_payload, default=json_default, indent=2)
+                    # ===== PHASE 8.9: Weighted Scoring (Forward Test) =====
+                    try:
+                        # Extract FNG value from enhanced analysis
+                        fng_value = 50  # default
+                        if market_sections and "enhanced_analysis" in market_sections[0]:
+                            ea = market_sections[0]["enhanced_analysis"]
+                            if "Value:" in ea:
+                                import re
+                                fng_match = re.search(r"Value:\s*(\d+)/100", ea)
+                                if fng_match:
+                                    fng_value = int(fng_match.group(1))
 
-                    # Store prompt in state for UI display
-                    self.state.last_prompt = context
-                    self._notify_state_update()
+                        scoring_results = score_all_assets(market_sections, fng_value)
 
-                    with open("data/prompts.log", "a", encoding="utf-8") as f:
-                        f.write(f"\n{'='*80}\n")
-                        f.write(f"Invocation {self.invocation_count} - {datetime.now(UTC).isoformat()}\n")
-                        f.write(f"{'='*80}\n")
-                        f.write(context + "\n")
+                        self.logger.info(f"📊 SCORING: {', '.join(f'{a}={r.suggested_action}({r.final_score:+.2f})' for a, r in scoring_results.items())}")
 
-                    # ===== PHASE 10: Get LLM Decision =====
-                    self.logger.info(f"🤖 Asking LLM for decisions on {len(assets_to_evaluate)} assets: {assets_to_evaluate}")
-                    decisions = await asyncio.to_thread(
-                        self.agent.decide_trade, assets_to_evaluate, context
-                    )
+                    except Exception as e:
+                        self.logger.warning(f"Scoring failed (non-critical): {e}")
+                        scoring_results = {}
 
-                    if not isinstance(decisions, dict) or 'trade_decisions' not in decisions:
-                        self.logger.warning("Invalid decision format, retrying with strict prefix...")
-                        strict_context = (
-                            "Return ONLY the JSON object per the schema. "
-                            "No markdown, no explanation.\n\n" + context
-                        )
+                    # ===== PHASE 9: Split Clear vs Ambiguous Decisions =====
+                    decision_mode = CONFIG.get("decision_mode", "hybrid").lower()
+                    SCORE_THRESHOLD = 0.5
+                    CONFIDENCE_THRESHOLD = 0.8
+
+                    clear_decisions = []  # Scorer decides directly
+                    ambiguous_assets = []  # Need LLM
+
+                    if decision_mode == "llm":
+                        # LLM-only mode: all assets go to LLM
+                        ambiguous_assets = assets_to_evaluate.copy()
+                        self.logger.info("📋 DECISION_MODE=llm - All assets to LLM")
+
+                    elif decision_mode == "scorer":
+                        # Scorer-only mode: all assets decided by scorer
+                        for asset in assets_to_evaluate:
+                            if asset in scoring_results:
+                                sr = scoring_results[asset]
+                                market_section = next((s for s in market_sections if s.get('asset') == asset), {})
+
+                                clear_decisions.append({
+                                    'asset': asset,
+                                    'action': sr.suggested_action.lower(),
+                                    'allocation_usd': sr.suggested_size_pct * dashboard.get('balance', 0),
+                                    'tp_price': sr.suggested_tp,
+                                    'sl_price': sr.suggested_sl,
+                                    'rationale': f"[SCORER] score={sr.final_score:+.2f}, conf={sr.final_confidence:.0%}",
+                                    'exit_plan': f"ATR-based TP/SL. Score: {sr.final_score:+.2f}",
+                                    'source': 'scorer'
+                                })
+                                self.logger.info(f"✅ {asset}: SCORER {sr.suggested_action} (score={sr.final_score:+.2f})")
+                            else:
+                                # Fallback to HOLD if no score
+                                clear_decisions.append({
+                                    'asset': asset,
+                                    'action': 'hold',
+                                    'allocation_usd': 0,
+                                    'rationale': '[SCORER] No score available - default HOLD',
+                                    'source': 'scorer'
+                                })
+                        self.logger.info("📋 DECISION_MODE=scorer - All assets by Scorer")
+
+                    else:  # hybrid (default)
+                        for asset in assets_to_evaluate:
+                            if asset in scoring_results:
+                                sr = scoring_results[asset]
+                                if abs(sr.final_score) >= SCORE_THRESHOLD and sr.final_confidence >= CONFIDENCE_THRESHOLD:
+                                    # Clear decision - scorer handles it
+                                    clear_decisions.append({
+                                        'asset': asset,
+                                        'action': sr.suggested_action.lower(),
+                                        'allocation_usd': sr.suggested_size_pct * dashboard.get('balance', 0),
+                                        'tp_price': sr.suggested_tp,
+                                        'sl_price': sr.suggested_sl,
+                                        'rationale': f"[SCORER] score={sr.final_score:+.2f}, conf={sr.final_confidence:.0%}, signals={sr.signals}",
+                                        'exit_plan': f"ATR-based TP/SL. Score: {sr.final_score:+.2f}",
+                                        'source': 'scorer'
+                                    })
+                                    self.logger.info(f"✅ {asset}: SCORER decides {sr.suggested_action} (score={sr.final_score:+.2f}, conf={sr.final_confidence:.0%})")
+                                else:
+                                    ambiguous_assets.append(asset)
+                                    self.logger.info(f"🤔 {asset}: Ambiguous (score={sr.final_score:+.2f}, conf={sr.final_confidence:.0%}) → LLM")
+                            else:
+                                ambiguous_assets.append(asset)
+
+                    # ===== PHASE 10: Get LLM Decision (only for ambiguous assets) =====
+                    llm_decisions = []
+                    reasoning = ""
+
+                    if ambiguous_assets:
+                        # Build context only for ambiguous assets
+                        filtered_market_sections = [s for s in market_sections if s.get('asset') in ambiguous_assets]
+
+                        context_payload = OrderedDict([
+                            ("invocation", {
+                                "count": self.invocation_count,
+                                "current_time": datetime.now(UTC).isoformat()
+                            }),
+                            ("account", dashboard),
+                            ("market_data", filtered_market_sections),
+                            ("instructions", {
+                                "assets": ambiguous_assets,
+                                "note": "Follow the system prompt guidelines strictly"
+                            })
+                        ])
+                        context = json.dumps(context_payload, default=json_default, indent=2)
+
+                        # Store prompt in state for UI display
+                        self.state.last_prompt = context
+                        self._notify_state_update()
+
+                        self.logger.info(f"🤖 Asking LLM for {len(ambiguous_assets)} ambiguous assets: {ambiguous_assets}")
                         decisions = await asyncio.to_thread(
-                            self.agent.decide_trade, assets_to_evaluate, strict_context
+                            self.agent.decide_trade, ambiguous_assets, context
                         )
 
-                    trade_decisions = decisions.get('trade_decisions', [])
-                    if all(
+                        if not isinstance(decisions, dict) or 'trade_decisions' not in decisions:
+                            self.logger.warning("Invalid decision format, retrying with strict prefix...")
+                            strict_context = (
+                                "Return ONLY the JSON object per the schema. "
+                                "No markdown, no explanation.\n\n" + context
+                            )
+                            decisions = await asyncio.to_thread(
+                                self.agent.decide_trade, ambiguous_assets, strict_context
+                            )
+
+                        llm_decisions = decisions.get('trade_decisions', [])
+                        reasoning = decisions.get('reasoning', '')
+
+                        # Mark source
+                        for d in llm_decisions:
+                            d['source'] = 'llm'
+                    else:
+                        self.logger.info("✅ All assets handled by SCORER - skipping LLM call")
+
+                    # Merge all decisions
+                    trade_decisions = clear_decisions + llm_decisions
+
+                    # Handle parse error retry (only if LLM was called)
+                    if llm_decisions and all(
                         d.get('action') == 'hold' and 'parse error' in d.get('rationale', '').lower()
-                        for d in trade_decisions
+                        for d in llm_decisions
                     ):
-                        self.logger.warning("All holds with parse errors, retrying...")
+                        self.logger.warning("All LLM holds with parse errors, retrying...")
+                        context_payload = OrderedDict([
+                            ("invocation", {"count": self.invocation_count, "current_time": datetime.now(UTC).isoformat()}),
+                            ("account", dashboard),
+                            ("market_data", [s for s in market_sections if s.get('asset') in ambiguous_assets]),
+                            ("instructions", {"assets": ambiguous_assets, "note": "Follow the system prompt guidelines strictly"})
+                        ])
+                        context = json.dumps(context_payload, default=json_default, indent=2)
                         decisions = await asyncio.to_thread(
-                            self.agent.decide_trade, assets_to_evaluate, context
+                            self.agent.decide_trade, ambiguous_assets, context
                         )
-                        trade_decisions = decisions.get('trade_decisions', [])
+                        llm_decisions = decisions.get('trade_decisions', [])
+                        for d in llm_decisions:
+                            d['source'] = 'llm'
+                        trade_decisions = clear_decisions + llm_decisions
+                        reasoning = decisions.get('reasoning', '')
 
-                    reasoning = decisions.get('reasoning', '')
                     if reasoning:
                         self.logger.info(f"LLM Reasoning: {reasoning[:200]}...")
 
                     # Truncate to avoid WebSocket payload too large
-                    truncated = {"reasoning": reasoning[:500] if reasoning else "", "trade_decisions": decisions.get("trade_decisions", [])}
+                    truncated = {"reasoning": reasoning[:500] if reasoning else "", "trade_decisions": trade_decisions}
                     self.state.last_reasoning = truncated
+
+                    # Log decision summary
+                    scorer_count = sum(1 for d in trade_decisions if d.get('source') == 'scorer')
+                    llm_count = sum(1 for d in trade_decisions if d.get('source') == 'llm')
+                    self.logger.info(f"📊 Decisions: {scorer_count} by SCORER, {llm_count} by LLM")
 
                     # ===== PHASE 11: Execute Trades =====
                     for decision in trade_decisions:
