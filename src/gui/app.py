@@ -111,7 +111,7 @@ def create_app():
                     ('History', '📜 History', 'Trade history and logs'),
                     ('Market', '📈 Market', 'Market data and indicators'),
                     ('Reasoning', '🧠 AI Reasoning', 'LLM decision logic'),
-                    ('Settings', '⚙️ Settings', 'Configuration'),
+                    # Settings removed for security (API keys visible from outside)
                 ]
 
                 # Create navigation buttons

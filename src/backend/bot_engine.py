@@ -1408,7 +1408,7 @@ class TradingBotEngine:
                         ("account", dashboard),
                         ("market_data", market_sections),
                         ("instructions", {
-                            "assets": self.assets,
+                            "assets": assets_to_evaluate,
                             "note": "Follow the system prompt guidelines strictly"
                         })
                     ])
