@@ -1576,13 +1576,15 @@ class TradingBotEngine:
                                 await asyncio.sleep(0.3)
                                 current_price = await self.hyperliquid.get_current_price(asset)
                                 amount = allocation / current_price if current_price > 0 else 0
-                                
-                                if pre_check.get('adjust_size') and pre_check['current_position']:
+
+                                # When allocation=0 (close position) or size mismatch, use actual position size
+                                if pre_check['current_position']:
                                     real_pos = pre_check['current_position']
-                                    if (action == 'buy' and real_pos['side'] == 'short') or \
-                                       (action == 'sell' and real_pos['side'] == 'long'):
+                                    is_close_action = (action == 'buy' and real_pos['side'] == 'short') or \
+                                                      (action == 'sell' and real_pos['side'] == 'long')
+                                    if is_close_action and (amount == 0 or pre_check.get('adjust_size')):
                                         amount = real_pos['size']
-                                        self.logger.info(f"📐 Using actual position size for close: {amount}")
+                                        self.logger.info(f"📐 Closing position - using actual size: {amount}")
 
                                 # ===== VALIDATE TP/SL =====
                                 validation = self._validate_tp_sl(asset, action, current_price, tp_price, sl_price)
