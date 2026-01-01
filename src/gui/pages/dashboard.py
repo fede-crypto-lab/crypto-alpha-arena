@@ -2,6 +2,8 @@
 Dashboard Page - Main dashboard with metrics and charts
 """
 
+import asyncio
+import time
 import plotly.graph_objects as go
 from nicegui import ui
 from src.gui.services.bot_service import BotService
@@ -122,6 +124,11 @@ def create_dashboard(bot_service: BotService, state_manager: StateManager):
             refresh_data_btn.classes('bg-blue-600 hover:bg-blue-700 text-white px-6 py-3')
             refresh_data_loading = ui.label('').classes('text-sm text-blue-400 ml-2')
 
+            # Force Evaluate Button
+            force_eval_btn = ui.button('⚡ Force Evaluate', on_click=lambda: force_evaluate())
+            force_eval_btn.classes('bg-purple-600 hover:bg-purple-700 text-white px-6 py-3')
+            force_eval_loading = ui.label('').classes('text-sm text-purple-400 ml-2')
+
             # Start Button
             start_btn = ui.button('▶ Start Bot', on_click=lambda: start_bot())
             start_btn.classes('bg-green-600 hover:bg-green-700 text-white px-6 py-3')
@@ -183,10 +190,39 @@ def create_dashboard(bot_service: BotService, state_manager: StateManager):
             activity_log.push(f'❌ Error stopping bot: {str(e)}')
             ui.notify(f'Failed to stop: {str(e)}', type='negative')
 
+    async def force_evaluate():
+        """Force an immediate evaluation cycle"""
+        try:
+            force_eval_btn.enabled = False
+            force_eval_loading.text = '⏳ Evaluating...'
+            activity_log.push('⚡ Force evaluation started...')
+
+            success = await bot_service.force_evaluate()
+
+            if success:
+                force_eval_loading.text = '✅ Done'
+                activity_log.push('✅ Force evaluation completed!')
+                ui.notify('Evaluation triggered!', type='positive')
+
+                # Update dashboard immediately
+                await update_dashboard()
+            else:
+                force_eval_loading.text = '❌ Failed'
+                activity_log.push('❌ Force evaluation failed')
+                ui.notify('Force evaluation failed', type='negative')
+
+        except Exception as e:
+            activity_log.push(f'❌ Evaluation error: {str(e)}')
+            ui.notify(f'Error: {str(e)}', type='negative')
+            force_eval_loading.text = '❌ Error'
+        finally:
+            force_eval_btn.enabled = True
+            # Clear loading message after 3 seconds
+            await asyncio.sleep(3.0)
+            force_eval_loading.text = ''
+
     # ===== AUTO-REFRESH FUNCTIONS =====
 
-    import time
-    import asyncio
     last_refresh_time = None
     refresh_seconds_ago = 0
     shown_event_ids = set()  # Track events already shown to avoid duplicates

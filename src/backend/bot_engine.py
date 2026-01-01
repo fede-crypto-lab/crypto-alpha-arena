@@ -115,6 +115,7 @@ class TradingBotEngine:
 
         self.state = BotState()
         self.is_running = False
+        self._force_evaluate_flag = False
         self._task: Optional[asyncio.Task] = None
 
         self.start_time: Optional[datetime] = None
@@ -374,6 +375,7 @@ class TradingBotEngine:
 
         self.is_running = False
         self.state.is_running = False
+        self._force_evaluate_flag = False
 
         if self._task:
             self._task.cancel()
@@ -384,6 +386,98 @@ class TradingBotEngine:
 
         self.logger.info("Bot stopped")
         self._notify_state_update()
+
+    async def force_evaluate(self) -> bool:
+        """
+        Force an immediate evaluation cycle.
+
+        If bot is running: sets flag to skip sleep and run next iteration immediately.
+        If bot is stopped: runs one full iteration directly.
+
+        Returns:
+            True if evaluation was triggered/completed successfully
+        """
+        self.logger.info("🔄 Force evaluate requested")
+
+        if self.is_running:
+            # Bot is running - set flag to skip next sleep
+            self._force_evaluate_flag = True
+            self.logger.info("✅ Force evaluate flag set - next iteration will run immediately")
+            return True
+        else:
+            # Bot is stopped - run one iteration directly
+            self.logger.info("🚀 Running single evaluation (bot not running)...")
+            try:
+                # We need to initialize hyperliquid if not already done
+                if not self.hyperliquid:
+                    from src.backend.trading.exchange_factory import create_exchange
+                    self.hyperliquid = create_exchange()
+
+                # Run one iteration of the main loop logic
+                # This is a simplified version - just scoring + LLM decision without trade execution
+                await self._run_single_evaluation()
+                return True
+            except Exception as e:
+                self.logger.error(f"Force evaluate failed: {e}", exc_info=True)
+                return False
+
+    async def _run_single_evaluation(self):
+        """Run a single evaluation cycle (scoring + LLM decisions, no trades)"""
+        from src.backend.indicators.enhanced_context import EnhancedContext
+        from src.backend.scoring.weighted_scorer import score_all_assets
+
+        self.invocation_count += 1
+        self.state.invocation_count = self.invocation_count
+
+        # Fetch account state
+        state = await self.hyperliquid.get_user_state()
+        self.state.balance = state['balance']
+        self.state.total_value = state['total_value']
+
+        # Enrich positions
+        enriched_positions = []
+        for pos in state['positions']:
+            symbol = pos.get('coin')
+            size = float(pos.get('szi', 0) or 0)
+            if abs(size) < 0.00001:
+                continue
+            try:
+                current_price = await self.hyperliquid.get_current_price(symbol)
+                enriched_positions.append({
+                    'symbol': symbol,
+                    'quantity': size,
+                    'entry_price': float(pos.get('entryPx', 0) or 0),
+                    'current_price': current_price,
+                    'unrealized_pnl': pos.get('pnl', 0.0),
+                })
+            except Exception:
+                pass
+        self.state.positions = enriched_positions
+
+        # Fetch market data for all assets
+        context = EnhancedContext(assets=self.assets, interval=self.interval)
+        market_sections = await context.build(self.hyperliquid)
+
+        # Run scoring
+        scoring_results = score_all_assets(market_sections)
+
+        # Log results
+        score_summary = ", ".join([
+            f"{r.asset}={r.action.upper()}({r.score:+.2f})"
+            for r in scoring_results
+        ])
+        self.logger.info(f"📊 SCORING: {score_summary}")
+
+        # Update state
+        self.state.market_data = [{
+            'asset': s.get('asset'),
+            'current_price': s.get('current_price'),
+            'funding_rate': s.get('funding_rate'),
+        } for s in market_sections]
+        self.state.last_update = datetime.now(UTC).isoformat()
+        self._notify_state_update()
+
+        self.logger.info("✅ Single evaluation completed")
 
     def _generate_fallback_tpsl(self, asset: str, action: str, current_price: float,
                                  atr: Optional[float] = None) -> Dict[str, float]:
@@ -1926,7 +2020,13 @@ class TradingBotEngine:
                     if self.on_error:
                         self.on_error(str(e))
 
-                await asyncio.sleep(self._get_interval_seconds())
+                # Check if force evaluate was requested
+                if self._force_evaluate_flag:
+                    self._force_evaluate_flag = False
+                    self.logger.info("⚡ Force evaluate - skipping sleep")
+                    await asyncio.sleep(1)  # Small delay to avoid hammering
+                else:
+                    await asyncio.sleep(self._get_interval_seconds())
 
         except asyncio.CancelledError:
             self.logger.info("Bot loop cancelled")

@@ -112,6 +112,42 @@ class BotService:
             self.logger.error(f"Error stopping bot: {e}", exc_info=True)
             raise
 
+    async def force_evaluate(self) -> bool:
+        """
+        Force an immediate evaluation cycle.
+
+        Works whether bot is running or stopped.
+        If running: triggers next iteration immediately.
+        If stopped: runs a single evaluation cycle.
+
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            if self.bot_engine:
+                result = await self.bot_engine.force_evaluate()
+                if result:
+                    self._add_event("🔄 Force evaluation triggered")
+                return result
+            else:
+                # Create temporary bot engine for evaluation
+                self.logger.info("Creating temporary bot engine for force evaluation")
+                from src.backend.bot_engine import TradingBotEngine
+
+                temp_engine = TradingBotEngine(
+                    assets=self.config['assets'],
+                    interval=self.config['interval'],
+                    on_state_update=self._on_state_update,
+                )
+                result = await temp_engine.force_evaluate()
+                if result:
+                    self._add_event("🔄 Force evaluation completed")
+                return result
+        except Exception as e:
+            self.logger.error(f"Force evaluate failed: {e}", exc_info=True)
+            self._add_event(f"❌ Force evaluate failed: {str(e)}", level="error")
+            return False
+
     def is_running(self) -> bool:
         """Check if bot is currently running"""
         return self.bot_engine is not None and self.bot_engine.is_running
