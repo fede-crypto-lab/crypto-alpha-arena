@@ -56,6 +56,7 @@ class SentimentClient:
         """
         # Check cache first
         if limit == 1 and self._is_cache_valid():
+            logger.debug("Using cached Fear & Greed data")
             return self._cache
         
         try:
