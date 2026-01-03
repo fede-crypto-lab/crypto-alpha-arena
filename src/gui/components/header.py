@@ -45,9 +45,20 @@ def create_header(state_manager: StateManager):
                 with ui.column().classes('text-center'):
                     status_label = ui.label('⚫ Stopped').classes('text-sm font-bold')
 
-            # Auto-refresh metrics
+            # Auto-refresh metrics with change detection
+            last_header_hash = [None]  # Use list to allow modification in nested function
+
+            def _header_hash(state) -> str:
+                return f"{state.balance:.2f}|{state.total_value}|{state.total_return_pct:.2f}|{state.sharpe_ratio:.2f}|{state.is_running}|{state.error}"
+
             async def update_header():
                 state = state_manager.get_state()
+
+                # Skip update if nothing changed
+                current_hash = _header_hash(state)
+                if current_hash == last_header_hash[0]:
+                    return
+                last_header_hash[0] = current_hash
 
                 # Update balance - show total account value and available
                 total_val = state.total_value if state.total_value else state.balance
@@ -78,5 +89,5 @@ def create_header(state_manager: StateManager):
                     status_label.text = '🔴 Error'
                     status_label.classes(remove='text-green-500 text-gray-400', add='text-red-500')
 
-            # Refresh every second
-            ui.timer(1.0, update_header)
+            # Refresh every 5 seconds (was 1s - too frequent)
+            ui.timer(5.0, update_header)

@@ -150,7 +150,16 @@ def create_positions(bot_service: BotService, state_manager: StateManager):
     # Empty state message
     empty_message = ui.label('No active positions').classes('text-center text-gray-500 text-lg mt-8')
     empty_message.visible = True
-    
+
+    # Change detection
+    last_positions_hash = [None]
+
+    def _positions_hash(positions) -> str:
+        parts = [str(len(positions))]
+        for p in positions:
+            parts.append(f"{p.get('symbol')}:{p.get('quantity')}:{p.get('current_price', 0):.2f}:{p.get('unrealized_pnl', 0):.2f}")
+        return "|".join(parts)
+
     # Update function
     async def update_positions():
         """Update positions table with latest data from bot engine"""
@@ -158,6 +167,12 @@ def create_positions(bot_service: BotService, state_manager: StateManager):
             # Read directly from bot_service for real-time sync
             state = bot_service.get_state()
             positions = state.positions or []
+
+            # Skip update if nothing changed
+            current_hash = _positions_hash(positions)
+            if current_hash == last_positions_hash[0]:
+                return
+            last_positions_hash[0] = current_hash
             
             # Show/hide empty message
             empty_message.visible = len(positions) == 0
@@ -217,8 +232,8 @@ def create_positions(bot_service: BotService, state_manager: StateManager):
         except Exception as e:
             ui.notify(f'Error updating positions: {str(e)}', type='warning')
     
-    # Auto-refresh every 2 seconds
-    ui.timer(2.0, update_positions)
+    # Auto-refresh every 10 seconds (with change detection, skips if no changes)
+    ui.timer(10.0, update_positions)
     
     # Initial update
     # Note: Can't await in sync context, timer will handle it

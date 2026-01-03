@@ -236,8 +236,8 @@ def create_reasoning(bot_service: BotService, state_manager: StateManager):
 
     action_filter.on('update:model-value', on_filter_change)
 
-    # Auto-refresh every 3 seconds
-    ui.timer(3.0, update_reasoning)
+    # Auto-refresh every 15 seconds
+    ui.timer(15.0, update_reasoning)
 
     # Initial update
     asyncio.create_task(update_reasoning())

@@ -226,6 +226,22 @@ def create_dashboard(bot_service: BotService, state_manager: StateManager):
     last_refresh_time = None
     refresh_seconds_ago = 0
     shown_event_ids = set()  # Track events already shown to avoid duplicates
+    last_state_hash = None  # Track state changes to avoid unnecessary updates
+
+    def _compute_state_hash(state) -> str:
+        """Compute a hash of the relevant state to detect changes"""
+        key_parts = [
+            f"{state.balance:.2f}",
+            f"{state.total_value:.2f}" if state.total_value else "0",
+            f"{state.total_return_pct:.2f}",
+            str(len(state.positions or [])),
+            state.last_update or "",
+            str(state.is_running),
+        ]
+        # Include position details
+        for pos in (state.positions or []):
+            key_parts.append(f"{pos.get('symbol')}:{pos.get('quantity')}:{pos.get('current_price', 0):.2f}")
+        return "|".join(key_parts)
 
     async def refresh_market_data():
         """Refresh market data from Hyperliquid without starting bot"""
@@ -264,11 +280,26 @@ def create_dashboard(bot_service: BotService, state_manager: StateManager):
 
     async def update_dashboard():
         """Update all dashboard components with latest data"""
-        nonlocal refresh_seconds_ago
+        nonlocal refresh_seconds_ago, last_state_hash
 
         try:
             # Read directly from bot_service for real-time sync
             state = bot_service.get_state()
+
+            # Check if state actually changed
+            current_hash = _compute_state_hash(state)
+            if current_hash == last_state_hash:
+                # Only update timestamp display, skip heavy UI updates
+                if last_refresh_time:
+                    refresh_seconds_ago = int(time.time() - last_refresh_time)
+                    if refresh_seconds_ago < 60:
+                        last_refresh_label.text = f'Last refreshed: {refresh_seconds_ago} seconds ago'
+                    else:
+                        minutes = refresh_seconds_ago // 60
+                        last_refresh_label.text = f'Last refreshed: {minutes} minutes ago'
+                return  # Skip full update - nothing changed
+
+            last_state_hash = current_hash
 
             # Update metrics cards - show total account value and available balance
             total_val = state.total_value if state.total_value else state.balance
@@ -416,8 +447,8 @@ def create_dashboard(bot_service: BotService, state_manager: StateManager):
             activity_log.push(f'Dashboard update error: {str(e)}')
 
     # ===== AUTO-REFRESH TIMER =====
-    # Update dashboard every 3 seconds
-    ui.timer(3.0, update_dashboard)
+    # Update dashboard every 10 seconds (with change detection, skips if no changes)
+    ui.timer(10.0, update_dashboard)
 
     # Initial update (call immediately, but don't await in sync context)
     # The timer will handle subsequent updates

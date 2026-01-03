@@ -205,8 +205,8 @@ def create_recommendations(bot_service: BotService, state_manager: StateManager)
         except Exception as e:
             ui.notify(f'Error: {str(e)}', type='negative')
     
-    # Auto-refresh every 2 seconds
-    ui.timer(2.0, update_proposals)
+    # Auto-refresh every 10 seconds
+    ui.timer(10.0, update_proposals)
     
     # Initial update
     # (timer will handle subsequent updates)
