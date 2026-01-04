@@ -1093,13 +1093,16 @@ class TradingBotEngine:
             self.logger.error(f"❌ POST-TRADE VERIFY failed: {e}")
             return result
 
-    async def _place_tpsl_orders(self, asset: str, is_long: bool, amount: float, 
+    async def _place_tpsl_orders(self, asset: str, is_long: bool, amount: float,
                                   tp_price: Optional[float], sl_price: Optional[float],
                                   tracked_trade: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Place TP/SL orders with churn reduction.
         Only cancels and replaces if prices changed significantly.
-        
+
+        IMPORTANT: Cancels ALL existing TP/SL orders for the asset first to prevent
+        order accumulation from previous trades.
+
         Returns:
             Dict with 'tp_oid', 'sl_oid', 'tp_placed', 'sl_placed'
         """
@@ -1109,28 +1112,33 @@ class TradingBotEngine:
             'tp_placed': False,
             'sl_placed': False
         }
-        
+
         # Check if update is needed
         update_needed = {'update_tp': True, 'update_sl': True}
         if tracked_trade:
             update_needed = self._should_update_tpsl(tracked_trade, tp_price, sl_price)
-        
-        # Determine which orders to cancel
-        orders_to_cancel = []
-        if tracked_trade:
-            if update_needed['update_tp'] and tracked_trade.get('tp_oid'):
-                orders_to_cancel.append(('TP', tracked_trade['tp_oid']))
-            if update_needed['update_sl'] and tracked_trade.get('sl_oid'):
-                orders_to_cancel.append(('SL', tracked_trade['sl_oid']))
-        
-        # Cancel only necessary orders
-        for order_type, oid in orders_to_cancel:
+
+        # FIX: Cancel ALL existing TP/SL orders for this asset (not just tracked ones)
+        # This prevents order accumulation from previous trades
+        if update_needed['update_tp'] or update_needed['update_sl']:
             try:
                 await asyncio.sleep(0.3)
-                await self.hyperliquid.cancel_order(asset, oid)
-                self.logger.info(f"🧹 Cancelled {order_type} order for {asset} (oid: {oid})")
+                open_orders = await self.hyperliquid.get_open_orders()
+                asset_orders = [o for o in open_orders if o.get('coin') == asset]
+
+                if asset_orders:
+                    self.logger.info(f"🧹 Found {len(asset_orders)} existing orders for {asset} - cancelling all")
+                    for order in asset_orders:
+                        try:
+                            oid = order.get('oid')
+                            order_type = order.get('orderType', 'unknown')
+                            await asyncio.sleep(0.2)
+                            await self.hyperliquid.cancel_order(asset, oid)
+                            self.logger.info(f"🧹 Cancelled {order_type} order for {asset} (oid: {oid})")
+                        except Exception as e:
+                            self.logger.warning(f"Failed to cancel order {oid}: {e}")
             except Exception as e:
-                self.logger.warning(f"Failed to cancel {order_type} order: {e}")
+                self.logger.warning(f"Failed to fetch/cancel existing orders for {asset}: {e}")
         
         # Place TP if needed
         if tp_price and update_needed['update_tp']:
@@ -2037,14 +2045,16 @@ class TradingBotEngine:
                 self.on_error(str(e))
 
     async def _reconcile_active_trades(self, positions: List[Dict], open_orders: List[Dict]):
-        """Reconcile local active_trades with exchange state."""
+        """Reconcile local active_trades with exchange state.
+
+        Also cancels orphaned orders for assets that no longer have positions.
+        """
         exchange_assets = {pos.get('coin') for pos in positions if abs(float(pos.get('szi', 0) or 0)) > 0.00001}
         order_assets = {o.get('coin') for o in open_orders}
-        tracked_assets = exchange_assets | order_assets
 
         removed = []
         for trade in self.active_trades[:]:
-            if trade['asset'] not in tracked_assets:
+            if trade['asset'] not in exchange_assets:
                 self.active_trades.remove(trade)
                 removed.append(trade['asset'])
 
@@ -2056,6 +2066,25 @@ class TradingBotEngine:
                 'removed_assets': removed,
                 'note': 'Position no longer exists on exchange'
             })
+
+        # FIX: Cancel orphaned orders for assets that no longer have positions
+        orphaned_order_assets = order_assets - exchange_assets
+        if orphaned_order_assets:
+            self.logger.info(f"🧹 Found orphaned orders for assets without positions: {orphaned_order_assets}")
+            for asset in orphaned_order_assets:
+                try:
+                    asset_orders = [o for o in open_orders if o.get('coin') == asset]
+                    self.logger.info(f"🧹 Cancelling {len(asset_orders)} orphaned orders for {asset}")
+                    for order in asset_orders:
+                        try:
+                            oid = order.get('oid')
+                            await asyncio.sleep(0.2)
+                            await self.hyperliquid.cancel_order(asset, oid)
+                            self.logger.info(f"🧹 Cancelled orphaned order for {asset} (oid: {oid})")
+                        except Exception as e:
+                            self.logger.warning(f"Failed to cancel orphaned order {oid}: {e}")
+                except Exception as e:
+                    self.logger.warning(f"Failed to cancel orphaned orders for {asset}: {e}")
 
     def _calculate_sharpe(self, returns: List[float]) -> float:
         """Calculate naive Sharpe ratio from returns list"""
