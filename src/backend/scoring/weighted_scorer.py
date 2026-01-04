@@ -30,7 +30,7 @@ class ScoringResult:
     raw_score: float          # -1 to +1
     final_score: float        # after FNG filter
     base_confidence: float    # 0.5 to 1.0
-    final_confidence: float   # after volatility adjustment
+    final_confidence: float   # after volatility and RSI timing adjustment
 
     # Suggested action
     suggested_action: str     # BUY, SELL, HOLD
@@ -44,6 +44,10 @@ class ScoringResult:
     atr_ratio: float
     fng_value: int
     btc_trend: Optional[float]  # for altcoins
+
+    # RSI timing info
+    rsi_raw: Optional[float] = None         # Raw RSI value
+    rsi_timing_boost: Optional[float] = None  # Timing multiplier applied (1.3 or 0.7)
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -61,7 +65,9 @@ class ScoringResult:
             "suggested_sl": self.suggested_sl,
             "atr_ratio": round(self.atr_ratio, 4) if self.atr_ratio else None,
             "fng_value": self.fng_value,
-            "btc_trend": self.btc_trend
+            "btc_trend": self.btc_trend,
+            "rsi_raw": round(self.rsi_raw, 2) if self.rsi_raw else None,
+            "rsi_timing_boost": round(self.rsi_timing_boost, 2) if self.rsi_timing_boost else None
         }
 
 
@@ -155,7 +161,13 @@ class WeightedScorer:
         # Calculate confidence
         base_confidence = self._calculate_base_confidence(signals, final_score)
         confidence_multiplier = self._get_volatility_confidence_multiplier(atr_ratio)
-        final_confidence = base_confidence * confidence_multiplier
+        confidence_after_volatility = base_confidence * confidence_multiplier
+
+        # Apply RSI timing adjustment for entry confirmation
+        # Supertrend 4h gives direction, RSI confirms entry timing
+        rsi_raw = market_data.get("intraday", {}).get("rsi14")
+        rsi_timing_boost = self._calculate_rsi_timing_boost(rsi_raw, final_score)
+        final_confidence = confidence_after_volatility * rsi_timing_boost
 
         # Determine action
         suggested_action = self._score_to_action(final_score)
@@ -188,7 +200,9 @@ class WeightedScorer:
             suggested_sl=suggested_sl,
             atr_ratio=atr_ratio if atr_ratio else 1.0,
             fng_value=fng_value,
-            btc_trend=self.btc_supertrend if asset != "BTC" else None
+            btc_trend=self.btc_supertrend if asset != "BTC" else None,
+            rsi_raw=rsi_raw,
+            rsi_timing_boost=rsi_timing_boost
         )
 
     def _extract_signals(
@@ -444,6 +458,45 @@ class WeightedScorer:
             return 0.7  # Low volatility = signals less reliable
         else:
             return 1.0
+
+    def _calculate_rsi_timing_boost(
+        self,
+        rsi: Optional[float],
+        final_score: float
+    ) -> float:
+        """
+        Calculate RSI timing boost for entry confirmation.
+
+        Supertrend 4h gives direction, RSI confirms entry timing:
+        - RSI < 35 (oversold) + positive score → good long entry → boost 1.3x
+        - RSI > 65 (overbought) + negative score → good short entry → boost 1.3x
+        - Otherwise → suboptimal timing → reduce to 0.7x
+
+        This helps avoid entering longs at overbought levels and
+        shorts at oversold levels, improving entry timing.
+        """
+        if rsi is None:
+            return 1.0  # No RSI data, no adjustment
+
+        # RSI thresholds for timing
+        RSI_OVERSOLD = 35
+        RSI_OVERBOUGHT = 65
+        BOOST_MULTIPLIER = 1.3
+        REDUCE_MULTIPLIER = 0.7
+
+        # Good long entry: oversold + bullish score
+        if rsi < RSI_OVERSOLD and final_score > 0:
+            logger.debug(f"RSI timing BOOST for LONG: RSI={rsi:.1f} < {RSI_OVERSOLD}, score={final_score:.3f} > 0")
+            return BOOST_MULTIPLIER
+
+        # Good short entry: overbought + bearish score
+        if rsi > RSI_OVERBOUGHT and final_score < 0:
+            logger.debug(f"RSI timing BOOST for SHORT: RSI={rsi:.1f} > {RSI_OVERBOUGHT}, score={final_score:.3f} < 0")
+            return BOOST_MULTIPLIER
+
+        # Suboptimal timing: wait for better entry
+        logger.debug(f"RSI timing REDUCE: RSI={rsi:.1f}, score={final_score:.3f} - waiting for better timing")
+        return REDUCE_MULTIPLIER
 
     def _score_to_action(self, final_score: float) -> str:
         """Convert score to action."""

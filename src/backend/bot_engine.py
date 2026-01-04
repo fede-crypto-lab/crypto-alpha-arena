@@ -1516,7 +1516,13 @@ class TradingBotEngine:
 
                         scoring_results = score_all_assets(market_sections, fng_value)
 
-                        self.logger.info(f"📊 SCORING: {', '.join(f'{a}={r.suggested_action}({r.final_score:+.2f})' for a, r in scoring_results.items())}")
+                        # Log scoring results with RSI timing info
+                        score_details = []
+                        for a, r in scoring_results.items():
+                            rsi_info = f"RSI={r.rsi_raw:.0f}" if r.rsi_raw else "RSI=N/A"
+                            timing = "⚡" if r.rsi_timing_boost and r.rsi_timing_boost > 1 else "⏳" if r.rsi_timing_boost and r.rsi_timing_boost < 1 else ""
+                            score_details.append(f"{a}={r.suggested_action}({r.final_score:+.2f},{rsi_info}{timing})")
+                        self.logger.info(f"📊 SCORING: {', '.join(score_details)}")
 
                     except Exception as e:
                         self.logger.warning(f"Scoring failed (non-critical): {e}")
@@ -1550,6 +1556,8 @@ class TradingBotEngine:
                                     'suggested_sl': sr.suggested_sl,
                                     'suggested_allocation_usd': round(target_allocation, 2),
                                     'atr_ratio': round(sr.atr_ratio, 3) if sr.atr_ratio else None,
+                                    'rsi_raw': round(sr.rsi_raw, 1) if sr.rsi_raw else None,
+                                    'rsi_timing': round(sr.rsi_timing_boost, 2) if sr.rsi_timing_boost else None,
                                 }
 
                                 # Add current position info if exists
@@ -1738,6 +1746,8 @@ class TradingBotEngine:
                                         'suggested_tp': sr.suggested_tp,
                                         'suggested_sl': sr.suggested_sl,
                                         'suggested_allocation_usd': round(sr.suggested_size_pct * dashboard.get('balance', 0), 2),
+                                        'rsi_raw': round(sr.rsi_raw, 1) if sr.rsi_raw else None,
+                                        'rsi_timing': round(sr.rsi_timing_boost, 2) if sr.rsi_timing_boost else None,
                                     }
 
                                     # Add position info if asset has adequate position
