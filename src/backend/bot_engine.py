@@ -1537,22 +1537,57 @@ class TradingBotEngine:
 
                     elif decision_mode == "scorer":
                         # Scorer-only mode: all assets decided by scorer
+                        POSITION_ADEQUATE_THRESHOLD = 0.8  # Skip if position >= 80% of target
+
                         for asset in assets_to_evaluate:
                             if asset in scoring_results:
                                 sr = scoring_results[asset]
                                 market_section = next((s for s in market_sections if s.get('asset') == asset), {})
+                                suggested_action = sr.suggested_action.lower()
+                                target_allocation = sr.suggested_size_pct * dashboard.get('balance', 0)
 
-                                clear_decisions.append({
-                                    'asset': asset,
-                                    'action': sr.suggested_action.lower(),
-                                    'allocation_usd': sr.suggested_size_pct * dashboard.get('balance', 0),
-                                    'tp_price': sr.suggested_tp,
-                                    'sl_price': sr.suggested_sl,
-                                    'rationale': f"[SCORER] score={sr.final_score:+.2f}, conf={sr.final_confidence:.0%}",
-                                    'exit_plan': f"ATR-based TP/SL. Score: {sr.final_score:+.2f}",
-                                    'source': 'scorer'
-                                })
-                                self.logger.info(f"✅ {asset}: SCORER {sr.suggested_action} (score={sr.final_score:+.2f})")
+                                # ===== CHECK IF POSITION ALREADY ADEQUATE =====
+                                # Skip opening if already in same direction with >= 80% of target
+                                skip_reason = None
+                                if suggested_action in ['buy', 'sell']:
+                                    for pos in self.state.positions:
+                                        if pos.get('symbol') == asset:
+                                            quantity = float(pos.get('quantity', 0))
+                                            current_price = float(pos.get('current_price', 0) or pos.get('entry_price', 0))
+
+                                            if quantity != 0 and current_price > 0:
+                                                is_long = quantity > 0
+                                                suggested_long = (suggested_action == 'buy')
+
+                                                # Same direction - check if adequate
+                                                if is_long == suggested_long:
+                                                    position_value = abs(quantity) * current_price
+                                                    if position_value >= target_allocation * POSITION_ADEQUATE_THRESHOLD:
+                                                        skip_reason = f"already in {'LONG' if is_long else 'SHORT'} with ${position_value:.2f} (>= {POSITION_ADEQUATE_THRESHOLD*100:.0f}% of target ${target_allocation:.2f})"
+                                            break
+
+                                if skip_reason:
+                                    # Already have adequate position - skip to HOLD
+                                    clear_decisions.append({
+                                        'asset': asset,
+                                        'action': 'hold',
+                                        'allocation_usd': 0,
+                                        'rationale': f"[SCORER] SKIP - {skip_reason}",
+                                        'source': 'scorer'
+                                    })
+                                    self.logger.info(f"⏭️ {asset}: SKIP {sr.suggested_action} - {skip_reason}")
+                                else:
+                                    clear_decisions.append({
+                                        'asset': asset,
+                                        'action': suggested_action,
+                                        'allocation_usd': target_allocation,
+                                        'tp_price': sr.suggested_tp,
+                                        'sl_price': sr.suggested_sl,
+                                        'rationale': f"[SCORER] score={sr.final_score:+.2f}, conf={sr.final_confidence:.0%}",
+                                        'exit_plan': f"ATR-based TP/SL. Score: {sr.final_score:+.2f}",
+                                        'source': 'scorer'
+                                    })
+                                    self.logger.info(f"✅ {asset}: SCORER {sr.suggested_action} (score={sr.final_score:+.2f})")
                             else:
                                 # Fallback to HOLD if no score
                                 clear_decisions.append({
@@ -1565,22 +1600,54 @@ class TradingBotEngine:
                         self.logger.info("📋 DECISION_MODE=scorer - All assets by Scorer")
 
                     else:  # hybrid (default)
+                        POSITION_ADEQUATE_THRESHOLD = 0.8  # Skip if position >= 80% of target
+
                         for asset in assets_to_evaluate:
                             if asset in scoring_results:
                                 sr = scoring_results[asset]
                                 if abs(sr.final_score) >= SCORE_THRESHOLD and sr.final_confidence >= CONFIDENCE_THRESHOLD:
-                                    # Clear decision - scorer handles it
-                                    clear_decisions.append({
-                                        'asset': asset,
-                                        'action': sr.suggested_action.lower(),
-                                        'allocation_usd': sr.suggested_size_pct * dashboard.get('balance', 0),
-                                        'tp_price': sr.suggested_tp,
-                                        'sl_price': sr.suggested_sl,
-                                        'rationale': f"[SCORER] score={sr.final_score:+.2f}, conf={sr.final_confidence:.0%}, signals={sr.signals}",
-                                        'exit_plan': f"ATR-based TP/SL. Score: {sr.final_score:+.2f}",
-                                        'source': 'scorer'
-                                    })
-                                    self.logger.info(f"✅ {asset}: SCORER decides {sr.suggested_action} (score={sr.final_score:+.2f}, conf={sr.final_confidence:.0%})")
+                                    suggested_action = sr.suggested_action.lower()
+                                    target_allocation = sr.suggested_size_pct * dashboard.get('balance', 0)
+
+                                    # ===== CHECK IF POSITION ALREADY ADEQUATE =====
+                                    skip_reason = None
+                                    if suggested_action in ['buy', 'sell']:
+                                        for pos in self.state.positions:
+                                            if pos.get('symbol') == asset:
+                                                quantity = float(pos.get('quantity', 0))
+                                                current_price = float(pos.get('current_price', 0) or pos.get('entry_price', 0))
+
+                                                if quantity != 0 and current_price > 0:
+                                                    is_long = quantity > 0
+                                                    suggested_long = (suggested_action == 'buy')
+
+                                                    if is_long == suggested_long:
+                                                        position_value = abs(quantity) * current_price
+                                                        if position_value >= target_allocation * POSITION_ADEQUATE_THRESHOLD:
+                                                            skip_reason = f"already in {'LONG' if is_long else 'SHORT'} with ${position_value:.2f} (>= {POSITION_ADEQUATE_THRESHOLD*100:.0f}% of target ${target_allocation:.2f})"
+                                                break
+
+                                    if skip_reason:
+                                        clear_decisions.append({
+                                            'asset': asset,
+                                            'action': 'hold',
+                                            'allocation_usd': 0,
+                                            'rationale': f"[SCORER] SKIP - {skip_reason}",
+                                            'source': 'scorer'
+                                        })
+                                        self.logger.info(f"⏭️ {asset}: SKIP {sr.suggested_action} - {skip_reason}")
+                                    else:
+                                        clear_decisions.append({
+                                            'asset': asset,
+                                            'action': suggested_action,
+                                            'allocation_usd': target_allocation,
+                                            'tp_price': sr.suggested_tp,
+                                            'sl_price': sr.suggested_sl,
+                                            'rationale': f"[SCORER] score={sr.final_score:+.2f}, conf={sr.final_confidence:.0%}, signals={sr.signals}",
+                                            'exit_plan': f"ATR-based TP/SL. Score: {sr.final_score:+.2f}",
+                                            'source': 'scorer'
+                                        })
+                                        self.logger.info(f"✅ {asset}: SCORER decides {sr.suggested_action} (score={sr.final_score:+.2f}, conf={sr.final_confidence:.0%})")
                                 else:
                                     ambiguous_assets.append(asset)
                                     self.logger.info(f"🤔 {asset}: Ambiguous (score={sr.final_score:+.2f}, conf={sr.final_confidence:.0%}) → LLM")
