@@ -1531,9 +1531,26 @@ class TradingBotEngine:
                     ambiguous_assets = []  # Need LLM
 
                     if decision_mode == "llm":
-                        # LLM-only mode: all assets go to LLM
+                        # LLM-only mode: all assets go to LLM with scorer data as input
                         ambiguous_assets = assets_to_evaluate.copy()
-                        self.logger.info("📋 DECISION_MODE=llm - All assets to LLM")
+
+                        # Enrich market_sections with scorer analysis for LLM context
+                        for section in market_sections:
+                            asset = section.get('asset')
+                            if asset in scoring_results:
+                                sr = scoring_results[asset]
+                                section['scorer_analysis'] = {
+                                    'score': round(sr.final_score, 3),
+                                    'confidence': round(sr.final_confidence * 100, 1),
+                                    'suggested_action': sr.suggested_action,
+                                    'signals': {k: round(v, 3) for k, v in sr.signals.items()},
+                                    'suggested_tp': sr.suggested_tp,
+                                    'suggested_sl': sr.suggested_sl,
+                                    'suggested_size_pct': round(sr.suggested_size_pct * 100, 1),
+                                    'atr_ratio': round(sr.atr_ratio, 3) if sr.atr_ratio else None,
+                                }
+
+                        self.logger.info("📋 DECISION_MODE=llm - All assets to LLM (with scorer data)")
 
                     elif decision_mode == "scorer":
                         # Scorer-only mode: all assets decided by scorer
@@ -1661,6 +1678,22 @@ class TradingBotEngine:
                     if ambiguous_assets:
                         # Build context only for ambiguous assets
                         filtered_market_sections = [s for s in market_sections if s.get('asset') in ambiguous_assets]
+
+                        # Enrich with scorer data for hybrid mode (LLM mode already has it)
+                        if decision_mode == "hybrid":
+                            for section in filtered_market_sections:
+                                asset = section.get('asset')
+                                if asset in scoring_results and 'scorer_analysis' not in section:
+                                    sr = scoring_results[asset]
+                                    section['scorer_analysis'] = {
+                                        'score': round(sr.final_score, 3),
+                                        'confidence': round(sr.final_confidence * 100, 1),
+                                        'suggested_action': sr.suggested_action,
+                                        'signals': {k: round(v, 3) for k, v in sr.signals.items()},
+                                        'suggested_tp': sr.suggested_tp,
+                                        'suggested_sl': sr.suggested_sl,
+                                        'why_ambiguous': f"score={sr.final_score:+.2f} < 0.5 or confidence={sr.final_confidence:.0%} < 80%",
+                                    }
 
                         context_payload = OrderedDict([
                             ("invocation", {
