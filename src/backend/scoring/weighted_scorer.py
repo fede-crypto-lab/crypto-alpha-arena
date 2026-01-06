@@ -167,7 +167,7 @@ class WeightedScorer:
         # Supertrend 4h gives direction, RSI confirms entry timing
         rsi_raw = market_data.get("intraday", {}).get("rsi14")
         rsi_timing_boost = self._calculate_rsi_timing_boost(rsi_raw, final_score)
-        final_confidence = confidence_after_volatility * rsi_timing_boost
+        final_confidence = min(1.0, confidence_after_volatility * rsi_timing_boost)  # Cap at 100%
 
         # Determine action
         suggested_action = self._score_to_action(final_score)

@@ -1386,9 +1386,10 @@ class TradingBotEngine:
                         try:
                             self.logger.info("🔍 Running universal market scan...")
                             # UniversalScanner uses CoinGecko + exchange availability check
+                            # Use same parameters as GUI scan for consistency
                             scan_results = await self.scanner.scan_market(
-                                top_n=50,  # Scan top 50 coins by market cap
-                                max_results=self.scan_max_dynamic + len(self.assets),
+                                top_n=100,  # Scan top 100 coins by market cap
+                                max_results=20,  # Get enough results to find non-core opportunities
                                 include_non_tradeable=False  # Only tradeable on exchange
                             )
 
