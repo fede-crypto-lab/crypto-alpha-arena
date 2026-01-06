@@ -167,9 +167,9 @@ class MarketScanner:
     # Default core coins (can be overridden)
     DEFAULT_CORE_COINS = ["BTC", "ETH", "SOL", "DOGE", "XRP"]
 
-    # Minimum thresholds
-    MIN_VOLUME_24H = 100_000  # $100k min daily volume
-    MIN_OPEN_INTEREST = 50_000  # $50k min OI
+    # Minimum thresholds (lowered to include more altcoins)
+    MIN_VOLUME_24H = 10_000  # $10k min daily volume
+    MIN_OPEN_INTEREST = 5_000  # $5k min OI
 
     def __init__(
         self,
@@ -279,7 +279,11 @@ class MarketScanner:
             logger.warning("No market data from provider")
             return []
 
+        logger.info(f"Fetched {len(all_data)} assets from exchange")
+
         opportunities = []
+        skipped_volume = 0
+        skipped_oi = 0
 
         for data in all_data:
             symbol = data.get("symbol")
@@ -294,8 +298,10 @@ class MarketScanner:
             is_core = symbol in self.core_coins
             if not is_core:
                 if volume_24h < self.MIN_VOLUME_24H:
+                    skipped_volume += 1
                     continue
                 if open_interest < self.MIN_OPEN_INTEREST:
+                    skipped_oi += 1
                     continue
 
             score, signal, reasons = self.calculate_opportunity_score(
@@ -337,9 +343,12 @@ class MarketScanner:
 
         self._last_scan_results = result
 
-        logger.info(f"Scan complete: {len(core_opps)} core + {min(len(dynamic_opps), max_dynamic)} dynamic")
+        logger.info(f"Scan complete: {len(core_opps)} core + {len(dynamic_opps)} dynamic candidates")
+        if skipped_volume or skipped_oi:
+            logger.info(f"  Filtered out: {skipped_volume} low volume, {skipped_oi} low OI")
+        logger.info(f"  Returning top {min(len(dynamic_opps), max_dynamic)} dynamic assets")
         for opp in result[:10]:
-            logger.info(f"  {opp.symbol}: score={opp.score:.0f} signal={opp.signal}")
+            logger.info(f"  {opp.symbol}: score={opp.score:.0f} signal={opp.signal} ({', '.join(opp.reasons[:2])})")
 
         return result
 

@@ -23,7 +23,7 @@ from src.backend.indicators import EnhancedMarketContext
 from src.backend.agent.decision_maker import TradingAgent
 from src.backend.config_loader import CONFIG
 from src.backend.indicators.taapi_client import TAAPIClient
-from src.backend.indicators.market_scanner import MarketScanner, HyperliquidDataProvider
+from src.backend.indicators.universal_scanner import get_universal_scanner, UniversalScanner
 from src.backend.models.trade_proposal import TradeProposal
 from src.backend.trading.exchange_factory import create_exchange, get_exchange_name
 from src.backend.utils.prompt_utils import json_default
@@ -153,14 +153,16 @@ class TradingBotEngine:
         # ===== Volatility cache (populated during market data collection) =====
         self._atr_pct_cache: Dict[str, float] = {}  # asset -> ATR%
 
-        # ===== Market Scanner =====
+        # ===== Market Scanner (Universal - CoinGecko + Exchange) =====
         self.scan_enabled = CONFIG.get("scan_market", "false").lower() == "true"
         self.scan_max_dynamic = int(CONFIG.get("scan_max_dynamic", 3))
-        self.scanner: Optional[MarketScanner] = None
+        self.scanner: Optional[UniversalScanner] = None
         if self.scan_enabled:
-            provider = HyperliquidDataProvider(self.hyperliquid)
-            self.scanner = MarketScanner(data_provider=provider, core_coins=assets)
-            self.logger.info(f"🔍 Market scanner enabled: max {self.scan_max_dynamic} dynamic assets")
+            self.scanner = get_universal_scanner(
+                exchange_api=self.hyperliquid,
+                core_coins=assets
+            )
+            self.logger.info(f"🔍 Universal scanner enabled: max {self.scan_max_dynamic} dynamic assets")
 
     async def _rate_limited_call(self, coro):
         """
@@ -1382,27 +1384,35 @@ class TradingBotEngine:
                     scanned_assets = []
                     if self.scan_enabled and self.scanner:
                         try:
-                            self.logger.info("🔍 Running market scan...")
+                            self.logger.info("🔍 Running universal market scan...")
+                            # UniversalScanner uses CoinGecko + exchange availability check
                             scan_results = await self.scanner.scan_market(
-                                max_dynamic=self.scan_max_dynamic,
-                                include_core=False  # Core assets already in self.assets
+                                top_n=50,  # Scan top 50 coins by market cap
+                                max_results=self.scan_max_dynamic + len(self.assets),
+                                include_non_tradeable=False  # Only tradeable on exchange
                             )
 
                             # Get top opportunities above min score threshold
-                            min_score = float(CONFIG.get("scan_min_score", 40))
+                            min_score = float(CONFIG.get("scan_min_score", 20))
                             for opp in scan_results:
-                                if opp.symbol not in self.assets and opp.score >= min_score:
-                                    scanned_assets.append(opp.symbol)
-                                    self.logger.info(
-                                        f"  🎯 {opp.symbol}: score={opp.score:.0f} signal={opp.signal} "
-                                        f"({', '.join(opp.reasons[:2])})"
-                                    )
+                                # Only add if not already in core assets and tradeable
+                                if opp.symbol not in self.assets and opp.exchange_available:
+                                    if opp.score >= min_score and opp.signal != "NEUTRAL":
+                                        scanned_assets.append(opp.symbol)
+                                        self.logger.info(
+                                            f"  🎯 {opp.symbol}: score={opp.score:.0f} signal={opp.signal} "
+                                            f"({', '.join(opp.reasons[:2])})"
+                                        )
+                                        if len(scanned_assets) >= self.scan_max_dynamic:
+                                            break
 
                             # Store scan results for UI
                             self.state.scan_results = [o.to_dict() for o in scan_results[:10]]
 
                             if scanned_assets:
                                 self.logger.info(f"🔍 Scanner added {len(scanned_assets)} dynamic assets: {scanned_assets}")
+                            else:
+                                self.logger.info("🔍 No dynamic opportunities found above threshold")
                         except Exception as scan_err:
                             self.logger.warning(f"⚠️ Market scan failed: {scan_err}")
 
