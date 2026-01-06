@@ -121,6 +121,7 @@ class TradingBotEngine:
         self.state = BotState()
         self.is_running = False
         self._force_evaluate_flag = False
+        self._force_evaluate_event = asyncio.Event()  # Event to wake up sleeping loop
         self._task: Optional[asyncio.Task] = None
 
         self.start_time: Optional[datetime] = None
@@ -201,6 +202,7 @@ class TradingBotEngine:
         self.state.is_running = True
         self.start_time = datetime.now(UTC)
         self.invocation_count = 0
+        self._force_evaluate_event.clear()  # Clear event on start
 
         # ===== CRITICAL: STARTUP SYNC =====
         self.logger.info("🚀 STARTUP: Syncing with exchange...")
@@ -395,6 +397,7 @@ class TradingBotEngine:
         self.is_running = False
         self.state.is_running = False
         self._force_evaluate_flag = False
+        self._force_evaluate_event.clear()  # Clear event on stop
 
         if self._task:
             self._task.cancel()
@@ -419,9 +422,10 @@ class TradingBotEngine:
         self.logger.info("🔄 Force evaluate requested")
 
         if self.is_running:
-            # Bot is running - set flag to skip next sleep
+            # Bot is running - set flag and wake up the sleeping loop
             self._force_evaluate_flag = True
-            self.logger.info("✅ Force evaluate flag set - next iteration will run immediately")
+            self._force_evaluate_event.set()  # Wake up sleeping loop immediately
+            self.logger.info("✅ Force evaluate flag set - waking up loop immediately")
             return True
         else:
             # Bot is stopped - run one iteration directly
@@ -2326,13 +2330,22 @@ class TradingBotEngine:
                     if self.on_error:
                         self.on_error(str(e))
 
-                # Check if force evaluate was requested
-                if self._force_evaluate_flag:
+                # Sleep with interruptible wait (force_evaluate can wake us up)
+                sleep_seconds = self._get_interval_seconds()
+                try:
+                    # Wait for force_evaluate event OR timeout
+                    await asyncio.wait_for(
+                        self._force_evaluate_event.wait(),
+                        timeout=sleep_seconds
+                    )
+                    # Event was set - force evaluate requested
+                    self._force_evaluate_event.clear()
                     self._force_evaluate_flag = False
-                    self.logger.info("⚡ Force evaluate - skipping sleep")
+                    self.logger.info("⚡ Force evaluate - woke up from sleep immediately")
                     await asyncio.sleep(1)  # Small delay to avoid hammering
-                else:
-                    await asyncio.sleep(self._get_interval_seconds())
+                except asyncio.TimeoutError:
+                    # Normal timeout - continue with next iteration
+                    pass
 
         except asyncio.CancelledError:
             self.logger.info("Bot loop cancelled")
