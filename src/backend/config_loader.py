@@ -120,6 +120,10 @@ CONFIG = {
     "interval": _get_env("INTERVAL"),  # e.g., "5m", "1h"
     "trading_mode": _get_env("TRADING_MODE", "auto"),  # manual or auto
     "decision_mode": _get_env("DECISION_MODE", "hybrid"),  # "scorer", "llm", or "hybrid"
+    # Market scanner
+    "scan_market": _get_env("SCAN_MARKET", "false"),  # Enable dynamic coin scanning
+    "scan_max_dynamic": _get_env("SCAN_MAX_DYNAMIC", "3"),  # Max dynamic assets from scan
+    "scan_min_score": _get_env("SCAN_MIN_SCORE", "40"),  # Min score to include in evaluation
     # API server
     "api_host": _get_env("API_HOST", "0.0.0.0"),
     "api_port": _get_env("APP_PORT") or _get_env("API_PORT") or "3000",

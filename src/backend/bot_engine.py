@@ -23,6 +23,7 @@ from src.backend.indicators import EnhancedMarketContext
 from src.backend.agent.decision_maker import TradingAgent
 from src.backend.config_loader import CONFIG
 from src.backend.indicators.taapi_client import TAAPIClient
+from src.backend.indicators.market_scanner import MarketScanner, HyperliquidDataProvider
 from src.backend.models.trade_proposal import TradeProposal
 from src.backend.trading.exchange_factory import create_exchange, get_exchange_name
 from src.backend.utils.prompt_utils import json_default
@@ -151,6 +152,15 @@ class TradingBotEngine:
 
         # ===== Volatility cache (populated during market data collection) =====
         self._atr_pct_cache: Dict[str, float] = {}  # asset -> ATR%
+
+        # ===== Market Scanner =====
+        self.scan_enabled = CONFIG.get("scan_market", "false").lower() == "true"
+        self.scan_max_dynamic = int(CONFIG.get("scan_max_dynamic", 3))
+        self.scanner: Optional[MarketScanner] = None
+        if self.scan_enabled:
+            provider = HyperliquidDataProvider(self.hyperliquid)
+            self.scanner = MarketScanner(data_provider=provider, core_coins=assets)
+            self.logger.info(f"🔍 Market scanner enabled: max {self.scan_max_dynamic} dynamic assets")
 
     async def _rate_limited_call(self, coro):
         """
@@ -1368,14 +1378,46 @@ class TradingBotEngine:
                         'recent_fills': recent_fills
                     }
 
-                    # ===== PHASE 8: Gather Market Data =====
-                    # Include core assets + any non-core open positions
-                    position_symbols = {p['symbol'] for p in enriched_positions}
-                    non_core_positions = position_symbols - set(self.assets)
-                    assets_to_evaluate = list(self.assets) + list(non_core_positions)
+                    # ===== PHASE 7.5: Market Scan (optional) =====
+                    scanned_assets = []
+                    if self.scan_enabled and self.scanner:
+                        try:
+                            self.logger.info("🔍 Running market scan...")
+                            scan_results = await self.scanner.scan_market(
+                                max_dynamic=self.scan_max_dynamic,
+                                include_core=False  # Core assets already in self.assets
+                            )
 
-                    if non_core_positions:
-                        self.logger.info(f"📊 Evaluating {len(self.assets)} core + {len(non_core_positions)} scanner positions: {list(non_core_positions)}")
+                            # Get top opportunities above min score threshold
+                            min_score = float(CONFIG.get("scan_min_score", 40))
+                            for opp in scan_results:
+                                if opp.symbol not in self.assets and opp.score >= min_score:
+                                    scanned_assets.append(opp.symbol)
+                                    self.logger.info(
+                                        f"  🎯 {opp.symbol}: score={opp.score:.0f} signal={opp.signal} "
+                                        f"({', '.join(opp.reasons[:2])})"
+                                    )
+
+                            # Store scan results for UI
+                            self.state.scan_results = [o.to_dict() for o in scan_results[:10]]
+
+                            if scanned_assets:
+                                self.logger.info(f"🔍 Scanner added {len(scanned_assets)} dynamic assets: {scanned_assets}")
+                        except Exception as scan_err:
+                            self.logger.warning(f"⚠️ Market scan failed: {scan_err}")
+
+                    # ===== PHASE 8: Gather Market Data =====
+                    # Include core assets + scanned opportunities + any non-core open positions
+                    position_symbols = {p['symbol'] for p in enriched_positions}
+                    non_core_positions = position_symbols - set(self.assets) - set(scanned_assets)
+                    assets_to_evaluate = list(self.assets) + scanned_assets + list(non_core_positions)
+
+                    # Deduplicate while preserving order
+                    seen = set()
+                    assets_to_evaluate = [a for a in assets_to_evaluate if not (a in seen or seen.add(a))]
+
+                    if scanned_assets or non_core_positions:
+                        self.logger.info(f"📊 Evaluating {len(self.assets)} core + {len(scanned_assets)} scanned + {len(non_core_positions)} positions")
 
                     market_sections = []
                     for idx, asset in enumerate(assets_to_evaluate):
