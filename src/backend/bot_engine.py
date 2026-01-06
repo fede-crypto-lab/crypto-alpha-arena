@@ -79,6 +79,10 @@ class TradingBotEngine:
     # Minimum time (seconds) between any trades on same asset
     MIN_TRADE_INTERVAL = 300  # 5 minutes between trades
 
+    # ===== MINIMUM NOTIONAL SETTINGS =====
+    # Higher volatility = higher min size to ensure fees don't eat profits
+    MIN_NOTIONAL_BASE = 10.0  # $10 minimum for low volatility assets
+
     def __init__(
         self,
         assets: List[str],
@@ -138,12 +142,15 @@ class TradingBotEngine:
 
         self.diary_path = Path("data/diary.jsonl")
         self.diary_path.parent.mkdir(parents=True, exist_ok=True)
-        
+
         # ===== Rate limit tracking =====
         self._last_hl_call = 0.0
         self._hl_call_delay = 0.5  # Minimum delay between Hyperliquid API calls
         self._consecutive_429s = 0
         self._max_consecutive_429s = 5  # Skip iteration after this many 429s
+
+        # ===== Volatility cache (populated during market data collection) =====
+        self._atr_pct_cache: Dict[str, float] = {}  # asset -> ATR%
 
     async def _rate_limited_call(self, coro):
         """
@@ -479,11 +486,51 @@ class TradingBotEngine:
 
         self.logger.info("✅ Single evaluation completed")
 
+    def _get_volatility_tpsl_multiplier(self, atr_pct: float) -> float:
+        """Get TP/SL multiplier based on asset volatility.
+
+        Higher volatility assets get wider TP/SL to handle price noise.
+
+        Args:
+            atr_pct: ATR as percentage of price (atr/price * 100)
+
+        Returns:
+            Multiplier for TP/SL distances (1.0 = no change)
+        """
+        if atr_pct > 3.0:      # Very high volatility (ETH-like)
+            return 1.5         # 50% wider TP/SL
+        elif atr_pct > 2.0:    # High volatility
+            return 1.25        # 25% wider
+        elif atr_pct > 1.0:    # Medium volatility
+            return 1.0         # Default
+        else:                  # Low volatility (BTC-like)
+            return 0.85        # 15% tighter
+
+    def _get_min_notional(self, atr_pct: float) -> float:
+        """Get minimum notional (USD) for a trade based on asset volatility.
+
+        Higher volatility assets need larger position sizes to ensure
+        that trading fees don't eat into potential profits.
+
+        Args:
+            atr_pct: ATR as percentage of price (atr/price * 100)
+
+        Returns:
+            Minimum notional in USD
+        """
+        if atr_pct > 3.0:      # Very high volatility
+            return self.MIN_NOTIONAL_BASE * 2.0  # $20 min
+        elif atr_pct > 2.0:    # High volatility
+            return self.MIN_NOTIONAL_BASE * 1.5  # $15 min
+        else:
+            return self.MIN_NOTIONAL_BASE        # $10 min
+
     def _generate_fallback_tpsl(self, asset: str, action: str, current_price: float,
                                  atr: Optional[float] = None) -> Dict[str, float]:
         """Generate sensible TP/SL prices when LLM provides invalid values.
 
         Uses ATR if available, otherwise uses default percentages.
+        Adjusts for asset volatility - higher volatility = wider TP/SL.
 
         Args:
             asset: Asset symbol
@@ -494,10 +541,19 @@ class TradingBotEngine:
         Returns:
             Dict with 'tp_price' and 'sl_price'
         """
-        # Use ATR-based calculation if available (1.5x ATR for TP, 1x ATR for SL)
+        # Use ATR-based calculation if available
         if atr and atr > 0:
-            tp_distance = atr * 1.5
-            sl_distance = atr * 1.0
+            # Calculate ATR as percentage of price
+            atr_pct = (atr / current_price) * 100 if current_price > 0 else 2.0
+
+            # Get volatility-based multiplier
+            vol_multiplier = self._get_volatility_tpsl_multiplier(atr_pct)
+
+            # Base: 1.5x ATR for TP, 1x ATR for SL, adjusted by volatility
+            tp_distance = atr * 1.5 * vol_multiplier
+            sl_distance = atr * 1.0 * vol_multiplier
+
+            self.logger.debug(f"📊 {asset} ATR%={atr_pct:.2f}%, vol_mult={vol_multiplier:.2f}")
         else:
             # Fallback to percentage-based
             tp_distance = current_price * (self.DEFAULT_TP_DISTANCE_PCT / 100)
@@ -1416,6 +1472,10 @@ class TradingBotEngine:
                             if lt_obv is not None:
                                 market_data["long_term"]["obv"] = lt_obv
 
+                            # Cache ATR% for min notional validation during trade execution
+                            if lt_atr14 and current_price and current_price > 0:
+                                self._atr_pct_cache[asset] = (lt_atr14 / current_price) * 100
+
                             market_sections.append(market_data)
 
                         except Exception as e:
@@ -1969,6 +2029,22 @@ class TradingBotEngine:
                                     if is_close_action and (amount == 0 or pre_check.get('adjust_size')):
                                         amount = real_pos['size']
                                         self.logger.info(f"📐 Closing position - using actual size: {amount}")
+
+                                # ===== VALIDATE MIN NOTIONAL (for new positions only) =====
+                                is_new_position = not pre_check['current_position'] or \
+                                    (pre_check['current_position'] and
+                                     ((action == 'buy' and pre_check['current_position']['side'] == 'long') or
+                                      (action == 'sell' and pre_check['current_position']['side'] == 'short')))
+
+                                if is_new_position and allocation > 0:
+                                    atr_pct = self._atr_pct_cache.get(asset, 2.0)  # Default 2% if not cached
+                                    min_notional = self._get_min_notional(atr_pct)
+                                    if allocation < min_notional:
+                                        self.logger.warning(
+                                            f"⏭️ SKIPPING {action} {asset}: allocation ${allocation:.2f} < "
+                                            f"min notional ${min_notional:.2f} (ATR%={atr_pct:.1f}%)"
+                                        )
+                                        continue
 
                                 # ===== VALIDATE TP/SL =====
                                 validation = self._validate_tp_sl(asset, action, current_price, tp_price, sl_price)

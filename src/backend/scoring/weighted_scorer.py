@@ -524,6 +524,28 @@ class WeightedScorer:
         size_pct = max_trade * abs(final_score) * confidence
         return min(size_pct, max_trade)
 
+    def _get_volatility_tpsl_multiplier(self, atr_pct: float) -> float:
+        """
+        Get TP/SL multiplier based on asset volatility.
+
+        Higher volatility assets (like ETH) get wider TP/SL to avoid
+        being stopped out by normal price noise.
+
+        Args:
+            atr_pct: ATR as percentage of price (atr/price * 100)
+
+        Returns:
+            Multiplier for TP/SL distances (1.0 = no change)
+        """
+        if atr_pct > 3.0:      # Very high volatility (ETH-like)
+            return 1.5         # 50% wider TP/SL
+        elif atr_pct > 2.0:    # High volatility
+            return 1.25        # 25% wider
+        elif atr_pct > 1.0:    # Medium volatility
+            return 1.0         # Default
+        else:                  # Low volatility (BTC-like)
+            return 0.85        # 15% tighter
+
     def _calculate_dynamic_tpsl(
         self,
         entry_price: float,
@@ -532,18 +554,33 @@ class WeightedScorer:
         is_long: bool
     ) -> Tuple[float, float]:
         """
-        Calculate dynamic TP/SL based on ATR and score magnitude.
+        Calculate dynamic TP/SL based on ATR, score magnitude, and volatility.
 
         Score forte → TP più aggressivo, SL più stretto
         Score debole → TP conservativo, SL più largo
+
+        High volatility assets get wider TP/SL to handle price noise.
         """
         score_magnitude = abs(final_score)
 
+        # Calculate ATR as percentage of price
+        atr_pct = (atr / entry_price) * 100 if entry_price > 0 else 2.0
+
+        # Get volatility-based multiplier
+        vol_multiplier = self._get_volatility_tpsl_multiplier(atr_pct)
+
+        logger.debug(f"TPSL calc: ATR%={atr_pct:.2f}%, vol_mult={vol_multiplier:.2f}")
+
+        # Base multipliers (adjusted by score)
         # SL: 2.0 ATR at low score → 1.2 ATR at high score
-        sl_multiplier = 2.0 - (score_magnitude * 0.8)
+        base_sl_multiplier = 2.0 - (score_magnitude * 0.8)
 
         # TP: 1.5 ATR at low score → 2.5 ATR at high score
-        tp_multiplier = 1.5 + (score_magnitude * 1.0)
+        base_tp_multiplier = 1.5 + (score_magnitude * 1.0)
+
+        # Apply volatility adjustment
+        sl_multiplier = base_sl_multiplier * vol_multiplier
+        tp_multiplier = base_tp_multiplier * vol_multiplier
 
         sl_distance = atr * sl_multiplier
         tp_distance = atr * tp_multiplier
