@@ -48,6 +48,7 @@ class UniversalOpportunity:
     # Scoring
     score: float = 0.0
     signal: str = "NEUTRAL"  # "LONG", "SHORT", "NEUTRAL"
+    confidence: float = 0.5  # 0.5 to 1.0 based on signal concordance
     reasons: List[str] = field(default_factory=list)
 
     def to_dict(self) -> Dict:
@@ -72,6 +73,7 @@ class UniversalOpportunity:
             "ema_trend": self.ema_trend,
             "score": round(self.score, 2),
             "signal": self.signal,
+            "confidence": round(self.confidence, 2),
             "reasons": self.reasons,
         }
 
@@ -84,7 +86,7 @@ class UniversalScanner:
     1. CoinGecko -> Top coins by market cap, price changes
     2. Exchange (Hyperliquid) -> Check availability, get funding
     3. TAAPI -> Technical indicators (optional, rate limited)
-    4. Score and rank opportunities
+    4. Score and rank opportunities using weighted scoring (like WeightedScorer)
     """
 
     # Core coins excluded from dynamic opportunities
@@ -93,6 +95,17 @@ class UniversalScanner:
     # Minimum thresholds for scanning
     MIN_MARKET_CAP = 10_000_000  # $10M min market cap
     MIN_VOLUME_24H = 1_000_000   # $1M min daily volume
+
+    # Weighted scoring (similar to WeightedScorer but with available data)
+    BASE_WEIGHTS = {
+        "funding": 0.25,       # From exchange - strong signal
+        "momentum_1h": 0.20,   # From CoinGecko - short-term trend
+        "momentum_24h": 0.15,  # From CoinGecko - medium-term trend
+        "volume": 0.10,        # From CoinGecko - liquidity
+        "rsi": 0.15,           # From TAAPI (when available)
+        "btc_correlation": 0.10,  # BTC trend alignment for altcoins
+        "ath_discount": 0.05,  # Value opportunity
+    }
 
     def __init__(
         self,
@@ -121,10 +134,104 @@ class UniversalScanner:
         self._exchange_data: Dict[str, Dict] = {}
         self._last_scan_results: List[UniversalOpportunity] = []
 
+        # BTC trend for correlation (updated during scan)
+        self._btc_momentum_signal: float = 0.0
+
     def set_core_coins(self, coins: List[str]):
         """Update core coins list."""
         self.core_coins = set(coins)
         logger.info(f"Core coins updated: {self.core_coins}")
+
+    # ===== SIGNAL NORMALIZATION (like WeightedScorer) =====
+
+    def _normalize_funding(self, funding_rate: float) -> float:
+        """
+        Normalize funding rate to signal (-1 to +1).
+        Negative funding = expensive to short = bullish for longs
+        Positive funding = expensive to long = bearish
+        """
+        if not funding_rate:
+            return 0.0
+
+        # Convert to annualized percentage
+        funding_annual = funding_rate * 24 * 365 * 100
+
+        if funding_annual < -100:
+            return 1.0   # Very negative = strong long signal
+        elif funding_annual < -50:
+            return 0.5
+        elif funding_annual > 100:
+            return -1.0  # Very positive = strong short signal
+        elif funding_annual > 50:
+            return -0.5
+        else:
+            return 0.0
+
+    def _normalize_momentum(self, pct_change: float, threshold: float = 5.0) -> float:
+        """
+        Normalize price change to signal (-1 to +1).
+        Uses threshold for scaling.
+        """
+        if pct_change is None:
+            return 0.0
+
+        # Scale: ±threshold% = ±0.5, ±2*threshold% = ±1.0
+        normalized = pct_change / (threshold * 2)
+        return max(-1.0, min(1.0, normalized))
+
+    def _normalize_volume(self, volume_24h: float) -> float:
+        """
+        Normalize volume to signal (0 to 1).
+        High volume = more reliable signals.
+        """
+        if not volume_24h:
+            return 0.0
+
+        # $100M+ = 1.0, $10M = 0.5, $1M = 0.0
+        if volume_24h >= 100_000_000:
+            return 1.0
+        elif volume_24h >= 10_000_000:
+            return 0.5 + 0.5 * ((volume_24h - 10_000_000) / 90_000_000)
+        else:
+            return max(0.0, volume_24h / 20_000_000)
+
+    def _normalize_rsi(self, rsi: Optional[float]) -> float:
+        """
+        Normalize RSI to signal (-1 to +1).
+        Oversold (<30) = bullish, Overbought (>70) = bearish.
+        """
+        if rsi is None:
+            return 0.0
+
+        if rsi < 30:
+            return 1.0   # Oversold = long signal
+        elif rsi < 40:
+            return 0.5
+        elif rsi > 70:
+            return -1.0  # Overbought = short signal
+        elif rsi > 60:
+            return -0.5
+        else:
+            return 0.0
+
+    def _normalize_ath_discount(self, ath_change_pct: float) -> float:
+        """
+        Normalize ATH discount to signal (0 to 1).
+        Bigger discount = potential value opportunity.
+        """
+        if ath_change_pct is None or ath_change_pct >= 0:
+            return 0.0
+
+        # -50% = 0.3, -70% = 0.6, -90% = 1.0
+        discount = abs(ath_change_pct)
+        if discount >= 90:
+            return 1.0
+        elif discount >= 70:
+            return 0.6 + 0.4 * ((discount - 70) / 20)
+        elif discount >= 50:
+            return 0.3 + 0.3 * ((discount - 50) / 20)
+        else:
+            return max(0.0, discount / 166)
 
     async def _fetch_exchange_symbols(self) -> Set[str]:
         """Fetch available symbols from connected exchange."""
@@ -214,115 +321,138 @@ class UniversalScanner:
         exchange_data: Dict,
         taapi_data: Dict,
         is_exchange_available: bool
-    ) -> tuple[float, str, List[str]]:
+    ) -> tuple[float, str, List[str], float]:
         """
-        Calculate opportunity score based on multiple factors.
+        Calculate opportunity score using weighted signals (like WeightedScorer).
 
         Returns:
-            Tuple of (score, signal, reasons)
+            Tuple of (score_points, signal, reasons, confidence)
         """
-        score = 0.0
+        signals = {}
         reasons = []
-        signal = "NEUTRAL"
 
-        # === MOMENTUM SIGNALS (from CoinGecko) ===
+        # === EXTRACT NORMALIZED SIGNALS ===
 
-        # 1h momentum
-        if abs(coin.price_change_1h) > 3:
-            score += 20
-            direction = "up" if coin.price_change_1h > 0 else "down"
-            reasons.append(f"1h momentum {coin.price_change_1h:+.1f}%")
-            if signal == "NEUTRAL":
-                signal = "LONG" if coin.price_change_1h > 0 else "SHORT"
-
-        # 24h momentum
-        if abs(coin.price_change_24h) > 8:
-            score += 15
-            reasons.append(f"24h move {coin.price_change_24h:+.1f}%")
-            if signal == "NEUTRAL":
-                signal = "LONG" if coin.price_change_24h > 0 else "SHORT"
-
-        # 7d trend
-        if abs(coin.price_change_7d) > 15:
-            score += 10
-            reasons.append(f"7d trend {coin.price_change_7d:+.1f}%")
-
-        # === VOLUME SIGNALS ===
-        if coin.volume_24h > 100_000_000:
-            score += 20
-            reasons.append(f"High volume ${coin.volume_24h/1e6:.0f}M")
-        elif coin.volume_24h > 10_000_000:
-            score += 10
-            reasons.append(f"Good volume ${coin.volume_24h/1e6:.0f}M")
-
-        # === ATH DISCOUNT ===
-        if coin.ath_change_pct < -70:
-            score += 15
-            reasons.append(f"{abs(coin.ath_change_pct):.0f}% below ATH")
-        elif coin.ath_change_pct < -50:
-            score += 8
-
-        # === FUNDING RATE (from exchange) ===
+        # 1. Funding signal (from exchange)
         funding_rate = exchange_data.get("funding_rate", 0)
-        if funding_rate:
+        signals["funding"] = self._normalize_funding(funding_rate)
+        if signals["funding"] != 0:
             funding_apr = funding_rate * 24 * 365 * 100
+            reasons.append(f"Funding {funding_apr:+.0f}% APR")
 
-            if funding_rate < -0.0001:  # Negative funding = long opportunity
-                score += 25
-                reasons.append(f"Negative funding {funding_apr:.1f}% APR")
-                signal = "LONG"
-            elif funding_rate > 0.0003:  # High positive = short opportunity
-                score += 20
-                reasons.append(f"High funding {funding_apr:.1f}% APR")
-                signal = "SHORT"
+        # 2. 1h momentum (from CoinGecko)
+        signals["momentum_1h"] = self._normalize_momentum(coin.price_change_1h, threshold=3.0)
+        if abs(coin.price_change_1h) > 2:
+            reasons.append(f"1h {coin.price_change_1h:+.1f}%")
 
-        # === OPEN INTEREST ===
-        oi = exchange_data.get("open_interest", 0)
-        if oi > 50_000_000:
-            score += 10
-            reasons.append(f"High OI ${oi/1e6:.0f}M")
+        # 3. 24h momentum (from CoinGecko)
+        signals["momentum_24h"] = self._normalize_momentum(coin.price_change_24h, threshold=8.0)
+        if abs(coin.price_change_24h) > 5:
+            reasons.append(f"24h {coin.price_change_24h:+.1f}%")
 
-        # === TECHNICAL INDICATORS (from TAAPI) ===
+        # 4. Volume signal
+        signals["volume"] = self._normalize_volume(coin.volume_24h)
+        if coin.volume_24h > 50_000_000:
+            reasons.append(f"Vol ${coin.volume_24h/1e6:.0f}M")
+
+        # 5. RSI signal (from TAAPI if available)
         rsi = taapi_data.get("rsi")
-        if rsi is not None:
-            if rsi < 30:
-                score += 20
-                reasons.append(f"RSI oversold ({rsi:.0f})")
-                if signal == "NEUTRAL":
-                    signal = "LONG"
-            elif rsi > 70:
-                score += 15
-                reasons.append(f"RSI overbought ({rsi:.0f})")
-                if signal == "NEUTRAL":
-                    signal = "SHORT"
+        signals["rsi"] = self._normalize_rsi(rsi)
+        if rsi is not None and (rsi < 35 or rsi > 65):
+            reasons.append(f"RSI {rsi:.0f}")
 
-        macd = taapi_data.get("macd_histogram") or taapi_data.get("valueHist")
-        if macd is not None:
-            if macd > 0:
-                score += 5
-                reasons.append("MACD bullish")
-            else:
-                score += 5
-                reasons.append("MACD bearish")
+        # 6. BTC correlation (for altcoins only)
+        if coin.symbol != "BTC":
+            signals["btc_correlation"] = self._btc_momentum_signal
+        else:
+            signals["btc_correlation"] = 0.0
 
-        # === MARKET CAP RANK BONUS ===
-        if coin.market_cap_rank <= 20:
-            score += 10
-            reasons.append(f"Top {coin.market_cap_rank} by mcap")
-        elif coin.market_cap_rank <= 50:
-            score += 5
+        # 7. ATH discount
+        signals["ath_discount"] = self._normalize_ath_discount(coin.ath_change_pct)
+        if coin.ath_change_pct < -60:
+            reasons.append(f"{abs(coin.ath_change_pct):.0f}% < ATH")
 
-        # === EXCHANGE AVAILABILITY BONUS ===
+        # === CALCULATE WEIGHTED SCORE ===
+        weights = self.BASE_WEIGHTS.copy()
+
+        # For BTC, remove btc_correlation weight and redistribute
+        if coin.symbol == "BTC":
+            weights["btc_correlation"] = 0.0
+
+        # Normalize weights to sum to 1
+        total_weight = sum(weights.values())
+        if total_weight > 0:
+            weights = {k: v / total_weight for k, v in weights.items()}
+
+        # Calculate weighted sum
+        raw_score = 0.0
+        for key, weight in weights.items():
+            signal_value = signals.get(key, 0.0)
+            raw_score += signal_value * weight
+
+        # Clamp to [-1, 1]
+        raw_score = max(-1.0, min(1.0, raw_score))
+
+        # === DETERMINE SIGNAL DIRECTION ===
+        if raw_score > 0.15:
+            signal = "LONG"
+        elif raw_score < -0.15:
+            signal = "SHORT"
+        else:
+            signal = "NEUTRAL"
+
+        # === CALCULATE CONFIDENCE (signal concordance) ===
+        confidence = self._calculate_confidence(signals, raw_score)
+
+        # === CONVERT TO POINTS (for backward compatibility) ===
+        # Map [-1, 1] score to [0, 100] points range
+        # Strong signals (>0.5 or <-0.5) should get 70+ points
+        score_points = 50 + (raw_score * 50)  # Base 50, ±50 based on score
+
+        # Boost for high confidence
+        if confidence > 0.7:
+            score_points *= 1.2
+
+        # Boost for exchange availability
         if is_exchange_available:
-            score += 15
-            reasons.append("Tradeable on exchange")
+            score_points += 10
+            if "Tradeable" not in str(reasons):
+                reasons.append("Tradeable")
 
-        # === CORE COIN BONUS ===
+        # Core coin bonus
         if coin.symbol in self.core_coins:
-            score += 10
-            reasons.append("Core asset")
+            score_points += 10
+            reasons.append("Core")
 
-        return score, signal, reasons
+        # Market cap rank bonus
+        if coin.market_cap_rank <= 20:
+            score_points += 5
+
+        return score_points, signal, reasons, confidence
+
+    def _calculate_confidence(self, signals: Dict[str, float], raw_score: float) -> float:
+        """
+        Calculate confidence based on signal concordance.
+        Returns 0.5 to 1.0 based on how many signals agree.
+        """
+        if raw_score == 0:
+            return 0.5
+
+        score_direction = 1 if raw_score > 0 else -1
+        concordant = 0
+        total = 0
+
+        for key, value in signals.items():
+            if value == 0:
+                continue
+            total += 1
+            if (value > 0 and score_direction > 0) or (value < 0 and score_direction < 0):
+                concordant += 1
+
+        if total == 0:
+            return 0.5
+
+        return 0.5 + 0.5 * (concordant / total)
 
     async def scan_market(
         self,
@@ -359,6 +489,18 @@ class UniversalScanner:
 
         logger.info(f"Fetched {len(coins)} coins from CoinGecko, {len(exchange_symbols)} on exchange")
 
+        # Extract BTC momentum for altcoin correlation
+        self._btc_momentum_signal = 0.0
+        for coin in coins:
+            if coin.symbol == "BTC":
+                # Use 1h and 24h momentum to determine BTC trend
+                btc_1h = self._normalize_momentum(coin.price_change_1h, threshold=3.0)
+                btc_24h = self._normalize_momentum(coin.price_change_24h, threshold=8.0)
+                # Weight: 60% 1h, 40% 24h
+                self._btc_momentum_signal = btc_1h * 0.6 + btc_24h * 0.4
+                logger.info(f"BTC correlation signal: {self._btc_momentum_signal:+.2f} (1h={coin.price_change_1h:+.1f}%, 24h={coin.price_change_24h:+.1f}%)")
+                break
+
         opportunities = []
 
         for coin in coins:
@@ -384,8 +526,8 @@ class UniversalScanner:
                 if coin.price_change_1h > 2 or coin.price_change_1h < -2:
                     taapi_data = await self._fetch_taapi_indicators(coin.symbol)
 
-            # Calculate score
-            score, signal, reasons = self._calculate_score(
+            # Calculate score using weighted scoring
+            score, signal, reasons, confidence = self._calculate_score(
                 coin, exch_data, taapi_data, is_available
             )
 
@@ -408,6 +550,7 @@ class UniversalScanner:
                 macd_histogram=taapi_data.get("macd_histogram"),
                 score=score,
                 signal=signal,
+                confidence=confidence,
                 reasons=reasons,
             )
             opportunities.append(opp)
@@ -421,12 +564,13 @@ class UniversalScanner:
         self._last_scan_results = opportunities
 
         # Log top results
-        logger.info(f"Scan complete: {len(opportunities)} opportunities")
+        logger.info(f"Scan complete: {len(opportunities)} opportunities (weighted scoring)")
         tradeable = len([o for o in opportunities if o.exchange_available])
         logger.info(f"  Tradeable on exchange: {tradeable}")
         for opp in opportunities[:5]:
             avail = "✓" if opp.exchange_available else "✗"
-            logger.info(f"  {avail} {opp.symbol}: score={opp.score:.0f} signal={opp.signal}")
+            conf_pct = int(opp.confidence * 100)
+            logger.info(f"  {avail} {opp.symbol}: score={opp.score:.0f} signal={opp.signal} conf={conf_pct}%")
 
         return opportunities
 
