@@ -2021,9 +2021,13 @@ class TradingBotEngine:
                                     await asyncio.sleep(0.2)
                                     current_price = await self.hyperliquid.get_current_price(asset)
                                     size = allocation / current_price if current_price > 0 else 0
-                                    
+
+                                    # Get ATR from market section for proper TP/SL fallback calculation
+                                    market_section = next((s for s in market_sections if s.get('asset') == asset), {})
+                                    atr = market_section.get('long_term', {}).get('atr14')
+
                                     # Validate TP/SL
-                                    validation = self._validate_tp_sl(asset, action, current_price, tp_price, sl_price)
+                                    validation = self._validate_tp_sl(asset, action, current_price, tp_price, sl_price, atr)
                                     for warning in validation['warnings']:
                                         self.logger.warning(f"⚠️ {warning}")
                                     
@@ -2104,7 +2108,11 @@ class TradingBotEngine:
                                         continue
 
                                 # ===== VALIDATE TP/SL =====
-                                validation = self._validate_tp_sl(asset, action, current_price, tp_price, sl_price)
+                                # Get ATR from market section for proper TP/SL fallback calculation
+                                market_section = next((s for s in market_sections if s.get('asset') == asset), {})
+                                atr = market_section.get('long_term', {}).get('atr14')
+
+                                validation = self._validate_tp_sl(asset, action, current_price, tp_price, sl_price, atr)
                                 for warning in validation['warnings']:
                                     self.logger.warning(f"⚠️ {warning}")
                                 tp_price = validation['tp_price']
@@ -2259,8 +2267,12 @@ class TradingBotEngine:
                                         tracked_trade['amount'] = amount
                                     
                                     # Validate TP/SL
+                                    # Get ATR from market section for proper TP/SL fallback calculation
+                                    market_section = next((s for s in market_sections if s.get('asset') == asset), {})
+                                    atr = market_section.get('long_term', {}).get('atr14')
+
                                     action_for_validation = 'buy' if is_long else 'sell'
-                                    validation = self._validate_tp_sl(asset, action_for_validation, current_price, tp_price, sl_price)
+                                    validation = self._validate_tp_sl(asset, action_for_validation, current_price, tp_price, sl_price, atr)
                                     for warning in validation['warnings']:
                                         self.logger.warning(f"⚠️ {warning}")
                                     
@@ -2571,9 +2583,13 @@ class TradingBotEngine:
             
             if amount <= 0:
                 raise ValueError(f"Invalid amount: {amount}")
-            
+
+            # Calculate ATR from cached ATR% for proper TP/SL fallback calculation
+            atr_pct = self._atr_pct_cache.get(proposal.asset)
+            atr = (atr_pct / 100) * current_price if atr_pct and current_price > 0 else None
+
             # Validate TP/SL
-            validation = self._validate_tp_sl(proposal.asset, proposal.action, current_price, proposal.tp_price, proposal.sl_price)
+            validation = self._validate_tp_sl(proposal.asset, proposal.action, current_price, proposal.tp_price, proposal.sl_price, atr)
             for warning in validation['warnings']:
                 self.logger.warning(f"⚠️ {warning}")
             
