@@ -84,6 +84,12 @@ class TradingBotEngine:
     # Higher volatility = higher min size to ensure fees don't eat profits
     MIN_NOTIONAL_BASE = 10.0  # $10 minimum for low volatility assets
 
+    # ===== SCORE FILTERING THRESHOLDS =====
+    # Block new trades if score AND confidence are both below these thresholds
+    # (Does NOT apply to positions already open - LLM can still manage those)
+    MIN_SCORE_FOR_TRADE = 0.25          # Score minimo per aprire nuova posizione
+    MIN_CONFIDENCE_FOR_TRADE = 0.50     # Confidence minima (scala 0-1)
+
     def __init__(
         self,
         assets: List[str],
@@ -1836,8 +1842,39 @@ class TradingBotEngine:
                                         else:
                                             self.logger.info(f"✅ {asset}: SCORER decides {sr.suggested_action} (score={sr.final_score:+.2f})")
                                 else:
-                                    ambiguous_assets.append(asset)
-                                    self.logger.info(f"🤔 {asset}: Ambiguous (score={sr.final_score:+.2f}, conf={sr.final_confidence:.0%}) → LLM")
+                                    # Score/confidence below threshold - check if should VETO or pass to LLM
+                                    # VETO applies only to NEW positions, not to managing existing ones
+                                    if abs(sr.final_score) < self.MIN_SCORE_FOR_TRADE and sr.final_confidence < self.MIN_CONFIDENCE_FOR_TRADE:
+                                        # Check if there's an open position for this asset
+                                        has_open_position = any(
+                                            pos.get('coin') == asset and abs(float(pos.get('szi', 0) or 0)) > 0.0001
+                                            for pos in self.state.positions
+                                        )
+
+                                        if has_open_position:
+                                            # Position exists → let LLM manage (might need to close/adjust)
+                                            ambiguous_assets.append(asset)
+                                            self.logger.info(
+                                                f"🔄 {asset}: Score basso (score={sr.final_score:+.2f}, conf={sr.final_confidence:.0%}) "
+                                                f"ma posizione aperta → LLM per gestione"
+                                            )
+                                        else:
+                                            # No position → VETO: don't open new trades on weak signals
+                                            clear_decisions.append({
+                                                'asset': asset,
+                                                'action': 'hold',
+                                                'allocation_usd': 0,
+                                                'rationale': f"[SCORER VETO] score={sr.final_score:+.2f} < {self.MIN_SCORE_FOR_TRADE}, conf={sr.final_confidence:.0%} < {self.MIN_CONFIDENCE_FOR_TRADE:.0%} - segnali troppo deboli",
+                                                'source': 'scorer'
+                                            })
+                                            self.logger.info(
+                                                f"🚫 {asset}: SCORER VETO - score={sr.final_score:+.2f}, conf={sr.final_confidence:.0%} "
+                                                f"troppo bassi, HOLD forzato (LLM bypassato)"
+                                            )
+                                    else:
+                                        # Score above veto threshold but below direct-decision threshold → LLM
+                                        ambiguous_assets.append(asset)
+                                        self.logger.info(f"🤔 {asset}: Ambiguous (score={sr.final_score:+.2f}, conf={sr.final_confidence:.0%}) → LLM")
                             else:
                                 ambiguous_assets.append(asset)
 
