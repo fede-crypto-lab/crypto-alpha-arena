@@ -69,16 +69,16 @@ class TradingBotEngine:
     MIN_PRICE_CHANGE_PCT = 0.5  # Only update if price changed by 0.5%+
 
     # Default TP/SL distances when LLM fails (as percentage of price)
-    DEFAULT_TP_DISTANCE_PCT = 3.0   # 3% profit target (let winners run)
-    DEFAULT_SL_DISTANCE_PCT = 1.5   # 1.5% stop loss (protect capital)
+    DEFAULT_TP_DISTANCE_PCT = 5.0   # 5% profit target (increased from 3% - let winners run more)
+    DEFAULT_SL_DISTANCE_PCT = 2.5   # 2.5% stop loss (increased from 1.5% - avoid noise stops)
 
     # ===== ANTI-CHURN SETTINGS =====
     # Minimum time (seconds) before allowing opposite direction trade
-    MIN_DIRECTION_CHANGE_COOLDOWN = 1800  # 30 minutes before flip allowed
+    MIN_DIRECTION_CHANGE_COOLDOWN = 3600  # 1 hour before flip allowed (was 30 min)
     # Minimum time (seconds) to hold a position before closing
-    MIN_HOLD_TIME = 900  # 15 minutes minimum hold
+    MIN_HOLD_TIME = 3600  # 1 hour minimum hold (was 15 min - short trades lose)
     # Minimum time (seconds) between any trades on same asset
-    MIN_TRADE_INTERVAL = 300  # 5 minutes between trades
+    MIN_TRADE_INTERVAL = 900  # 15 minutes between trades (was 5 min)
 
     # ===== MINIMUM NOTIONAL SETTINGS =====
     # Higher volatility = higher min size to ensure fees don't eat profits
@@ -1994,6 +1994,35 @@ class TradingBotEngine:
                             if not churn_check['allowed']:
                                 self.logger.warning(f"🚫 ANTI-CHURN: {asset} {action} blocked - {churn_check['reason']}")
                                 continue  # Skip this trade
+
+                            # ===== SOFT TREND FILTER: Warn and reduce size for counter-trend =====
+                            market_section = next((s for s in market_sections if s.get('asset') == asset), {})
+                            ema50 = market_section.get("long_term", {}).get("ema50")
+                            ema20 = market_section.get("long_term", {}).get("ema20")
+                            current_price_check = market_section.get("current_price")
+                            supertrend_advice = market_section.get("long_term", {}).get("supertrend", {}).get("advice")
+
+                            if ema50 and ema20 and current_price_check:
+                                # Downtrend: price < EMA20 < EMA50 OR bearish supertrend with price below EMA50
+                                is_downtrend = (current_price_check < ema20 < ema50) or \
+                                               (current_price_check < ema50 * 0.98 and supertrend_advice == "short")
+                                # Uptrend: price > EMA20 > EMA50 OR bullish supertrend with price above EMA50
+                                is_uptrend = (current_price_check > ema20 > ema50) or \
+                                             (current_price_check > ema50 * 1.02 and supertrend_advice == "long")
+
+                                if action == 'buy' and is_downtrend:
+                                    self.logger.warning(
+                                        f"⚠️ TREND WARNING: {asset} LONG in downtrend "
+                                        f"(price=${current_price_check:.2f} < EMA50=${ema50:.2f}) - SIZE REDUCED 50%"
+                                    )
+                                    allocation = allocation * 0.5  # Reduce size by 50%
+
+                                elif action == 'sell' and is_uptrend:
+                                    self.logger.warning(
+                                        f"⚠️ TREND WARNING: {asset} SHORT in uptrend "
+                                        f"(price=${current_price_check:.2f} > EMA50=${ema50:.2f}) - SIZE REDUCED 50%"
+                                    )
+                                    allocation = allocation * 0.5  # Reduce size by 50%
 
                             # ===== CLOSE OPPOSITE POSITION FIRST =====
                             # If there's an existing position in opposite direction, close it first

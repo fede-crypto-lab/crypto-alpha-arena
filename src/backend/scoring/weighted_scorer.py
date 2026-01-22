@@ -86,14 +86,16 @@ class WeightedScorer:
     """
 
     # Base weights (will be adjusted dynamically)
+    # NOTE: funding ridotto da 0.20 a 0.12 - può persistere settimane senza squeeze
+    # supertrend aumentato da 0.20 a 0.25 - trend è più affidabile
     BASE_WEIGHTS = {
-        "funding": 0.20,
-        "supertrend": 0.20,
+        "funding": 0.12,
+        "supertrend": 0.25,
         "rsi": 0.15,
         "btc_correlation": 0.15,
         "obv": 0.15,
         "pivot": 0.10,
-        "pattern": 0.05
+        "pattern": 0.08
     }
 
     # Position limits per asset
@@ -154,6 +156,17 @@ class WeightedScorer:
 
         # Calculate raw weighted score
         raw_score = self._calculate_weighted_score(signals, weights)
+
+        # ===== SUPERTREND PENALTY: Penalize counter-trend trades =====
+        # Se supertrend è SHORT e score è positivo (BUY), riduci lo score del 50%
+        # Se supertrend è LONG e score è negativo (SELL), riduci lo score del 50%
+        supertrend_signal = signals.get("supertrend", 0)
+        if supertrend_signal == -1.0 and raw_score > 0:
+            logger.info(f"⚠️ {asset}: Score {raw_score:.3f} ridotto 50% per LONG contro supertrend SHORT")
+            raw_score = raw_score * 0.5
+        elif supertrend_signal == 1.0 and raw_score < 0:
+            logger.info(f"⚠️ {asset}: Score {raw_score:.3f} ridotto 50% per SHORT contro supertrend LONG")
+            raw_score = raw_score * 0.5
 
         # Apply FNG filter
         final_score = self._apply_fng_filter(raw_score, fng_value)
@@ -256,19 +269,23 @@ class WeightedScorer:
         Normalize funding rate to signal.
         High positive funding = expensive to long = bearish signal
         High negative funding = expensive to short = bullish signal
+
+        NOTE: Threshold AUMENTATI e segnali RIDOTTI.
+        Il funding negativo può persistere settimane senza squeeze.
+        Non deve mai essere il driver principale di un trade.
         """
         if funding_annual_pct is None:
             return 0.0
 
-        # Threshold: >100% annual = strong signal
-        if funding_annual_pct > 100:
-            return -1.0  # very expensive to long
-        elif funding_annual_pct > 50:
-            return -0.5
-        elif funding_annual_pct < -100:
-            return 1.0   # very expensive to short (bullish for longs)
-        elif funding_annual_pct < -50:
-            return 0.5
+        # Threshold più alti - solo valori estremi contano
+        if funding_annual_pct > 150:
+            return -0.7  # Ridotto da -1.0
+        elif funding_annual_pct > 80:
+            return -0.3  # Ridotto da -0.5
+        elif funding_annual_pct < -150:
+            return 0.7   # Ridotto da 1.0
+        elif funding_annual_pct < -80:
+            return 0.3   # Ridotto da 0.5
         else:
             return 0.0
 
