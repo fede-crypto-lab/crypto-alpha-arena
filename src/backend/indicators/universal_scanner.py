@@ -719,9 +719,13 @@ def get_universal_scanner(
             taapi_client=taapi_client,
             core_coins=core_coins
         )
-    elif exchange_api and not _scanner.exchange_api:
-        _scanner.exchange_api = exchange_api
-    elif taapi_client and not _scanner.taapi_client:
-        _scanner.taapi_client = taapi_client
+    else:
+        # Update components if provided and not already set
+        if exchange_api and not _scanner.exchange_api:
+            _scanner.exchange_api = exchange_api
+        if taapi_client and not _scanner.taapi_client:
+            _scanner.taapi_client = taapi_client
+            _scanner.use_taapi = True  # Enable TAAPI usage when client is set
+            logger.info("Scanner: TAAPI client injected, supertrend fetching enabled")
 
     return _scanner
