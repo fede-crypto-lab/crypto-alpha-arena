@@ -47,8 +47,8 @@ class TradingAgent:
         self.sanitize_model = CONFIG.get("sanitize_model") or "openai/gpt-4o-mini"
         # Track last TAAPI tool call time for rate limiting (free plan only)
         self._last_taapi_tool_call = 0.0
-        # Check if using paid TAAPI plan (no rate limits)
-        self._taapi_is_paid = CONFIG.get("taapi_plan", "free").lower() == "paid"
+        # Check if using paid/basic TAAPI plan (higher rate limits)
+        self._taapi_is_paid = CONFIG.get("taapi_plan", "free").lower() in ("paid", "basic", "pro")
 
         # Detect models that don't support structured outputs (response_format)
         # DeepSeek via OpenRouter returns "This response_format type is unavailable now"

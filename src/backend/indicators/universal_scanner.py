@@ -44,6 +44,7 @@ class UniversalOpportunity:
     rsi: Optional[float] = None
     macd_histogram: Optional[float] = None
     ema_trend: Optional[str] = None  # "BULLISH", "BEARISH", "NEUTRAL"
+    supertrend: Optional[str] = None  # "LONG", "SHORT" from TAAPI 4h supertrend
 
     # Scoring
     score: float = 0.0
@@ -71,6 +72,7 @@ class UniversalOpportunity:
             "rsi": self.rsi,
             "macd_histogram": self.macd_histogram,
             "ema_trend": self.ema_trend,
+            "supertrend": self.supertrend,
             "score": round(self.score, 2),
             "signal": self.signal,
             "confidence": round(self.confidence, 2),
@@ -96,15 +98,18 @@ class UniversalScanner:
     MIN_MARKET_CAP = 10_000_000  # $10M min market cap
     MIN_VOLUME_24H = 1_000_000   # $1M min daily volume
 
-    # Weighted scoring (similar to WeightedScorer but with available data)
+    # Weighted scoring - ALIGNED with WeightedScorer (bot_engine uses this)
+    # NOTE: funding ridotto da 0.25 a 0.12 - può persistere settimane senza squeeze
+    # supertrend aggiunto a 0.25 - trend è il filtro principale
     BASE_WEIGHTS = {
-        "funding": 0.25,       # From exchange - strong signal
-        "momentum_1h": 0.20,   # From CoinGecko - short-term trend
-        "momentum_24h": 0.15,  # From CoinGecko - medium-term trend
-        "volume": 0.10,        # From CoinGecko - liquidity
+        "funding": 0.12,       # REDUCED from 0.25 - aligned with WeightedScorer
+        "supertrend": 0.25,    # NEW - macro trend filter (critical!)
+        "momentum_1h": 0.13,   # Reduced - short-term trend
+        "momentum_24h": 0.10,  # Reduced - medium-term trend
+        "volume": 0.08,        # From CoinGecko - liquidity
         "rsi": 0.15,           # From TAAPI (when available)
         "btc_correlation": 0.10,  # BTC trend alignment for altcoins
-        "ath_discount": 0.05,  # Value opportunity
+        "ath_discount": 0.07,  # Value opportunity
     }
 
     def __init__(
@@ -233,6 +238,23 @@ class UniversalScanner:
         else:
             return max(0.0, discount / 166)
 
+    def _normalize_supertrend(self, supertrend_data: Optional[Dict]) -> float:
+        """
+        Normalize supertrend to signal (-1 to +1).
+        LONG advice = bullish = +1
+        SHORT advice = bearish = -1
+        """
+        if not supertrend_data:
+            return 0.0
+
+        advice = supertrend_data.get("advice", "").lower()
+        if advice == "long":
+            return 1.0
+        elif advice == "short":
+            return -1.0
+        else:
+            return 0.0
+
     async def _fetch_exchange_symbols(self) -> Set[str]:
         """Fetch available symbols from connected exchange."""
         if not self.exchange_api:
@@ -287,27 +309,52 @@ class UniversalScanner:
 
         return {}
 
-    async def _fetch_taapi_indicators(self, symbol: str) -> Dict:
-        """Fetch technical indicators from TAAPI."""
+    async def _fetch_taapi_indicators(self, symbol: str, include_supertrend: bool = False) -> Dict:
+        """
+        Fetch technical indicators from TAAPI.
+
+        Args:
+            symbol: Coin symbol (e.g., "BTC")
+            include_supertrend: If True, fetch supertrend 4h (for trend filter)
+        """
         if not self.taapi_client or not self.use_taapi:
             return {}
 
         try:
-            # Use bulk endpoint if available
+            indicators = {}
+
+            # Use bulk endpoint if available (TAAPI Basic plan)
             if hasattr(self.taapi_client, 'get_bulk_indicators'):
-                return await self.taapi_client.get_bulk_indicators(
+                # Fetch RSI 1h
+                bulk_result = await self.taapi_client.get_bulk_indicators(
                     symbol=f"{symbol}/USDT",
                     exchange="binance",
                     interval="1h",
                     indicators=["rsi", "macd", "ema"]
                 )
+                if bulk_result:
+                    indicators.update(bulk_result)
 
-            # Fallback to individual calls (rate limited!)
-            indicators = {}
-            if hasattr(self.taapi_client, 'get_indicator'):
+            # Fallback to individual calls
+            elif hasattr(self.taapi_client, 'get_indicator'):
                 rsi = await self.taapi_client.get_indicator("rsi", f"{symbol}/USDT", "1h")
                 if rsi:
                     indicators["rsi"] = rsi.get("value")
+
+            # Fetch supertrend 4h separately (critical for trend filter)
+            if include_supertrend and hasattr(self.taapi_client, 'get_indicator'):
+                try:
+                    supertrend = await self.taapi_client.get_indicator(
+                        "supertrend",
+                        f"{symbol}/USDT",
+                        "4h",
+                        exchange="binance"
+                    )
+                    if supertrend:
+                        indicators["supertrend"] = supertrend
+                        logger.debug(f"{symbol} supertrend 4h: {supertrend.get('advice', 'N/A')}")
+                except Exception as e:
+                    logger.debug(f"Supertrend fetch failed for {symbol}: {e}")
 
             return indicators
 
@@ -323,7 +370,7 @@ class UniversalScanner:
         is_exchange_available: bool
     ) -> tuple[float, str, List[str], float]:
         """
-        Calculate opportunity score using weighted signals (like WeightedScorer).
+        Calculate opportunity score using weighted signals (ALIGNED with WeightedScorer).
 
         Returns:
             Tuple of (score_points, signal, reasons, confidence)
@@ -333,41 +380,48 @@ class UniversalScanner:
 
         # === EXTRACT NORMALIZED SIGNALS ===
 
-        # 1. Funding signal (from exchange)
+        # 1. Funding signal (from exchange) - REDUCED weight, thresholds aligned with scorer
         funding_rate = exchange_data.get("funding_rate", 0)
         signals["funding"] = self._normalize_funding(funding_rate)
         if signals["funding"] != 0:
             funding_apr = funding_rate * 24 * 365 * 100
             reasons.append(f"Funding {funding_apr:+.0f}% APR")
 
-        # 2. 1h momentum (from CoinGecko)
+        # 2. Supertrend signal (from TAAPI) - NEW: critical trend filter
+        supertrend_data = taapi_data.get("supertrend")
+        signals["supertrend"] = self._normalize_supertrend(supertrend_data)
+        if signals["supertrend"] != 0:
+            advice = supertrend_data.get("advice", "").upper() if supertrend_data else "N/A"
+            reasons.append(f"ST:{advice}")
+
+        # 3. 1h momentum (from CoinGecko)
         signals["momentum_1h"] = self._normalize_momentum(coin.price_change_1h, threshold=3.0)
         if abs(coin.price_change_1h) > 2:
             reasons.append(f"1h {coin.price_change_1h:+.1f}%")
 
-        # 3. 24h momentum (from CoinGecko)
+        # 4. 24h momentum (from CoinGecko)
         signals["momentum_24h"] = self._normalize_momentum(coin.price_change_24h, threshold=8.0)
         if abs(coin.price_change_24h) > 5:
             reasons.append(f"24h {coin.price_change_24h:+.1f}%")
 
-        # 4. Volume signal
+        # 5. Volume signal
         signals["volume"] = self._normalize_volume(coin.volume_24h)
         if coin.volume_24h > 50_000_000:
             reasons.append(f"Vol ${coin.volume_24h/1e6:.0f}M")
 
-        # 5. RSI signal (from TAAPI if available)
+        # 6. RSI signal (from TAAPI if available)
         rsi = taapi_data.get("rsi")
         signals["rsi"] = self._normalize_rsi(rsi)
         if rsi is not None and (rsi < 35 or rsi > 65):
             reasons.append(f"RSI {rsi:.0f}")
 
-        # 6. BTC correlation (for altcoins only)
+        # 7. BTC correlation (for altcoins only)
         if coin.symbol != "BTC":
             signals["btc_correlation"] = self._btc_momentum_signal
         else:
             signals["btc_correlation"] = 0.0
 
-        # 7. ATH discount
+        # 8. ATH discount
         signals["ath_discount"] = self._normalize_ath_discount(coin.ath_change_pct)
         if coin.ath_change_pct < -60:
             reasons.append(f"{abs(coin.ath_change_pct):.0f}% < ATH")
@@ -378,6 +432,10 @@ class UniversalScanner:
         # For BTC, remove btc_correlation weight and redistribute
         if coin.symbol == "BTC":
             weights["btc_correlation"] = 0.0
+
+        # If no supertrend data, remove its weight (don't penalize for missing data)
+        if signals["supertrend"] == 0 and not supertrend_data:
+            weights["supertrend"] = 0.0
 
         # Normalize weights to sum to 1
         total_weight = sum(weights.values())
@@ -392,6 +450,17 @@ class UniversalScanner:
 
         # Clamp to [-1, 1]
         raw_score = max(-1.0, min(1.0, raw_score))
+
+        # === SUPERTREND PENALTY: Penalize counter-trend trades (like WeightedScorer) ===
+        supertrend_signal = signals.get("supertrend", 0)
+        if supertrend_signal == -1.0 and raw_score > 0:
+            logger.info(f"⚠️ SCANNER {coin.symbol}: Score {raw_score:.3f} ridotto 50% per LONG contro supertrend SHORT")
+            raw_score = raw_score * 0.5
+            reasons.append("⚠️ Counter-trend")
+        elif supertrend_signal == 1.0 and raw_score < 0:
+            logger.info(f"⚠️ SCANNER {coin.symbol}: Score {raw_score:.3f} ridotto 50% per SHORT contro supertrend LONG")
+            raw_score = raw_score * 0.5
+            reasons.append("⚠️ Counter-trend")
 
         # === DETERMINE SIGNAL DIRECTION ===
         if raw_score > 0.15:
@@ -522,14 +591,22 @@ class UniversalScanner:
             # Get TAAPI indicators (only for available coins to save rate limits)
             taapi_data = {}
             if is_available and self.use_taapi:
-                # Only fetch for high potential coins to save rate limits
-                if coin.price_change_1h > 2 or coin.price_change_1h < -2:
-                    taapi_data = await self._fetch_taapi_indicators(coin.symbol)
+                # CRITICAL: Always fetch supertrend for tradeable coins (trend filter)
+                # RSI/MACD fetched only for high potential coins to save rate limits
+                has_momentum = coin.price_change_1h > 2 or coin.price_change_1h < -2
+                taapi_data = await self._fetch_taapi_indicators(
+                    coin.symbol,
+                    include_supertrend=True  # Always fetch supertrend for trend filter
+                )
 
             # Calculate score using weighted scoring
             score, signal, reasons, confidence = self._calculate_score(
                 coin, exch_data, taapi_data, is_available
             )
+
+            # Extract supertrend advice for display
+            supertrend_data = taapi_data.get("supertrend")
+            supertrend_advice = supertrend_data.get("advice", "").upper() if supertrend_data else None
 
             opp = UniversalOpportunity(
                 symbol=coin.symbol,
@@ -548,6 +625,7 @@ class UniversalScanner:
                 open_interest=exch_data.get("open_interest", 0),
                 rsi=taapi_data.get("rsi"),
                 macd_histogram=taapi_data.get("macd_histogram"),
+                supertrend=supertrend_advice,
                 score=score,
                 signal=signal,
                 confidence=confidence,

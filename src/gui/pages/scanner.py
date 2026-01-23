@@ -104,7 +104,7 @@ def create_scanner(bot_service: BotService, state_manager: StateManager):
                 {'name': 'name', 'label': 'Name', 'field': 'name', 'align': 'left'},
                 {'name': 'price', 'label': 'Price', 'field': 'price', 'sortable': True},
                 {'name': 'change_1h', 'label': '1h %', 'field': 'change_1h', 'sortable': True},
-                {'name': 'change_24h', 'label': '24h %', 'field': 'change_24h', 'sortable': True},
+                {'name': 'supertrend', 'label': 'Trend 4h', 'field': 'supertrend', 'sortable': True},
                 {'name': 'score', 'label': 'Score', 'field': 'score', 'sortable': True},
                 {'name': 'signal', 'label': 'Signal', 'field': 'signal', 'sortable': True},
                 {'name': 'tradeable', 'label': 'Tradeable', 'field': 'tradeable', 'sortable': True},
@@ -140,13 +140,14 @@ def create_scanner(bot_service: BotService, state_manager: StateManager):
             ui.label('Trading Opportunities').classes('text-xl font-bold text-white')
             ui.label('Excludes core coins and open positions').classes('text-sm text-gray-400')
 
-        # Opportunities table
+        # Opportunities table (only shows trend-aligned opportunities)
         opportunities_table = ui.table(
             columns=[
                 {'name': 'symbol', 'label': 'Symbol', 'field': 'symbol', 'sortable': True, 'align': 'left'},
                 {'name': 'name', 'label': 'Name', 'field': 'name', 'align': 'left'},
                 {'name': 'price', 'label': 'Price', 'field': 'price', 'sortable': True},
                 {'name': 'change_1h', 'label': '1h %', 'field': 'change_1h', 'sortable': True},
+                {'name': 'supertrend', 'label': 'Trend 4h', 'field': 'supertrend', 'sortable': True},
                 {'name': 'score', 'label': 'Score', 'field': 'score', 'sortable': True},
                 {'name': 'signal', 'label': 'Signal', 'field': 'signal', 'sortable': True},
                 {'name': 'funding', 'label': 'Funding APR', 'field': 'funding'},
@@ -201,13 +202,22 @@ def create_scanner(bot_service: BotService, state_manager: StateManager):
                     change_1h = r.get('price_change_1h', 0)
                     change_24h = r.get('price_change_24h', 0)
 
+                    # Format supertrend with emoji
+                    supertrend = r.get('supertrend', '')
+                    if supertrend == 'LONG':
+                        supertrend_display = '🟢 LONG'
+                    elif supertrend == 'SHORT':
+                        supertrend_display = '🔴 SHORT'
+                    else:
+                        supertrend_display = '-'
+
                     rows.append({
                         'rank': r.get('market_cap_rank', i + 1),
                         'symbol': r['symbol'],
                         'name': name,
                         'price': f"${r['price']:,.4f}" if r['price'] < 1 else f"${r['price']:,.2f}" if r.get('price') else 'N/A',
                         'change_1h': f"{change_1h:+.1f}%" if change_1h else '-',
-                        'change_24h': f"{change_24h:+.1f}%" if change_24h else '-',
+                        'supertrend': supertrend_display,
                         'score': f"{r['score']:.0f}",
                         'signal': r['signal'],
                         'tradeable': '✓' if is_tradeable else '✗',
@@ -239,11 +249,21 @@ def create_scanner(bot_service: BotService, state_manager: StateManager):
                         name = r.get('name', '')[:15]
                         change_1h = r.get('price_change_1h', 0)
 
+                        # Format supertrend with emoji
+                        supertrend = r.get('supertrend', '')
+                        if supertrend == 'LONG':
+                            supertrend_display = '🟢 LONG'
+                        elif supertrend == 'SHORT':
+                            supertrend_display = '🔴 SHORT'
+                        else:
+                            supertrend_display = '-'
+
                         opp_rows.append({
                             'symbol': r['symbol'],
                             'name': name,
                             'price': f"${r['price']:,.4f}" if r['price'] < 1 else f"${r['price']:,.2f}" if r.get('price') else 'N/A',
                             'change_1h': f"{change_1h:+.1f}%" if change_1h else '-',
+                            'supertrend': supertrend_display,
                             'score': f"{r['score']:.0f}",
                             'signal': r['signal'],
                             'funding': f"{r.get('funding_annualized', 0):.1f}%",

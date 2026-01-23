@@ -27,10 +27,12 @@ class TAAPIClient:
         self.bulk_url = "https://api.taapi.io/bulk"
         self.enable_cache = enable_cache
         self.cache = get_cache(ttl=cache_ttl) if enable_cache else None
-        # Check if using paid plan (no rate limits, more indicators)
-        self.is_paid = CONFIG.get("taapi_plan", "free").lower() == "paid"
+        # Check if using paid/basic plan (higher rate limits, more indicators)
+        taapi_plan = CONFIG.get("taapi_plan", "free").lower()
+        self.is_paid = taapi_plan in ("paid", "basic", "pro")
+        self.plan_name = taapi_plan
         if self.is_paid:
-            logging.info("TAAPI: Using PAID plan (no rate limits, all coins, extended indicators)")
+            logging.info(f"TAAPI: Using {taapi_plan.upper()} plan (higher rate limits, all coins)")
         else:
             logging.info("TAAPI: Using FREE plan (15s rate limit, BTC/ETH only)")
 

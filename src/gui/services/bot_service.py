@@ -35,11 +35,12 @@ class BotService:
         # Configuration
         # Top assets by market cap - depends on TAAPI plan
         # Free plan: Only BTC/ETH are fully supported by TAAPI
-        # Paid plan: All coins supported
-        is_taapi_paid = CONFIG.get('taapi_plan', 'free').lower() == 'paid'
+        # Paid/Basic plan: All coins supported
+        taapi_plan = CONFIG.get('taapi_plan', 'free').lower()
+        is_taapi_paid = taapi_plan in ('paid', 'basic', 'pro')
         if is_taapi_paid:
             DEFAULT_ASSETS = ['BTC', 'ETH', 'SOL', 'DOGE', 'LINK', 'AVAX']
-            self.logger.info("TAAPI PAID plan: Using extended coin list")
+            self.logger.info(f"TAAPI {taapi_plan.upper()} plan: Using extended coin list")
         else:
             DEFAULT_ASSETS = ['BTC', 'ETH']  # Free plan only supports these
             self.logger.info("TAAPI FREE plan: Using BTC/ETH only")
@@ -301,11 +302,12 @@ class BotService:
             # Initialize components
             hyperliquid = create_exchange()
 
-            # Only use TAAPI if we have a paid plan (to avoid rate limits)
+            # Only use TAAPI if we have a paid/basic plan (to avoid rate limits)
             taapi_client = None
-            if CONFIG.get('taapi_plan', 'free').lower() == 'paid':
+            scanner_taapi_plan = CONFIG.get('taapi_plan', 'free').lower()
+            if scanner_taapi_plan in ('paid', 'basic', 'pro'):
                 taapi_client = TAAPIClient()
-                self.logger.info("Universal scanner: TAAPI enabled (paid plan)")
+                self.logger.info(f"Universal scanner: TAAPI enabled ({scanner_taapi_plan} plan)")
 
             self.universal_scanner = UniversalScanner(
                 exchange_api=hyperliquid,

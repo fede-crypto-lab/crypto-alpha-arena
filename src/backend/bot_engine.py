@@ -1465,7 +1465,7 @@ class TradingBotEngine:
 
                             # Wait between assets - shorter for paid TAAPI plan
                             if idx < len(assets_to_evaluate) - 1:
-                                is_taapi_paid = CONFIG.get("taapi_plan", "free").lower() == "paid"
+                                is_taapi_paid = CONFIG.get("taapi_plan", "free").lower() in ("paid", "basic", "pro")
                                 if not is_taapi_paid:
                                     self.logger.info(f"Waiting 15s before fetching next asset (TAAPI rate limit)...")
                                     await asyncio.sleep(15)
