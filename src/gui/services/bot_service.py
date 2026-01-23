@@ -292,6 +292,7 @@ class BotService:
     async def init_universal_scanner(self):
         """Initialize the universal market-wide scanner."""
         if self.universal_scanner:
+            self.logger.info(f"Universal scanner already initialized (use_taapi={self.universal_scanner.use_taapi})")
             return  # Already initialized
 
         try:
@@ -305,9 +306,12 @@ class BotService:
             # Only use TAAPI if we have a paid/basic plan (to avoid rate limits)
             taapi_client = None
             scanner_taapi_plan = CONFIG.get('taapi_plan', 'free').lower()
+            self.logger.info(f"Universal scanner: TAAPI_PLAN={scanner_taapi_plan}")
             if scanner_taapi_plan in ('paid', 'basic', 'pro'):
                 taapi_client = TAAPIClient()
-                self.logger.info(f"Universal scanner: TAAPI enabled ({scanner_taapi_plan} plan)")
+                self.logger.info(f"Universal scanner: TAAPI client created ({scanner_taapi_plan} plan)")
+            else:
+                self.logger.info(f"Universal scanner: TAAPI disabled (plan={scanner_taapi_plan}, not in paid/basic/pro)")
 
             self.universal_scanner = UniversalScanner(
                 exchange_api=hyperliquid,
@@ -315,7 +319,7 @@ class BotService:
                 core_coins=self.config['core_coins'],
                 use_taapi=(taapi_client is not None)
             )
-            self.logger.info(f"Universal scanner initialized with core coins: {self.config['core_coins']}")
+            self.logger.info(f"Universal scanner initialized: use_taapi={self.universal_scanner.use_taapi}, core_coins={self.config['core_coins']}")
         except Exception as e:
             self.logger.error(f"Failed to initialize universal scanner: {e}")
 

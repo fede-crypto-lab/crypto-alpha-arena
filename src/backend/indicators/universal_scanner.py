@@ -318,43 +318,48 @@ class UniversalScanner:
             include_supertrend: If True, fetch supertrend 4h (for trend filter)
         """
         if not self.taapi_client or not self.use_taapi:
+            logger.debug(f"TAAPI fetch skipped: taapi_client={self.taapi_client is not None}, use_taapi={self.use_taapi}")
             return {}
 
         try:
             indicators = {}
+            taapi_symbol = f"{symbol}/USDT"
 
-            # Use bulk endpoint if available (TAAPI Basic plan)
-            if hasattr(self.taapi_client, 'get_bulk_indicators'):
-                # Fetch RSI 1h
-                bulk_result = await self.taapi_client.get_bulk_indicators(
-                    symbol=f"{symbol}/USDT",
-                    exchange="binance",
-                    interval="1h",
-                    indicators=["rsi", "macd", "ema"]
-                )
-                if bulk_result:
-                    indicators.update(bulk_result)
-
-            # Fallback to individual calls
-            elif hasattr(self.taapi_client, 'get_indicator'):
-                rsi = await self.taapi_client.get_indicator("rsi", f"{symbol}/USDT", "1h")
-                if rsi:
-                    indicators["rsi"] = rsi.get("value")
-
-            # Fetch supertrend 4h separately (critical for trend filter)
-            if include_supertrend and hasattr(self.taapi_client, 'get_indicator'):
+            # Fetch supertrend 4h (critical for trend filter)
+            if include_supertrend:
                 try:
-                    supertrend = await self.taapi_client.get_indicator(
-                        "supertrend",
-                        f"{symbol}/USDT",
+                    # Use bulk endpoint to fetch supertrend
+                    supertrend_config = [
+                        {"id": "supertrend", "indicator": "supertrend", "period": 10, "multiplier": 3}
+                    ]
+                    # TAAPIClient methods are sync, run in thread pool
+                    bulk_result = await asyncio.to_thread(
+                        self.taapi_client.fetch_bulk_indicators,
+                        taapi_symbol,
                         "4h",
-                        exchange="binance"
+                        supertrend_config
                     )
-                    if supertrend:
-                        indicators["supertrend"] = supertrend
-                        logger.debug(f"{symbol} supertrend 4h: {supertrend.get('advice', 'N/A')}")
+                    if bulk_result and "supertrend" in bulk_result:
+                        st_data = bulk_result["supertrend"]
+                        if isinstance(st_data, dict):
+                            # Extract advice field (valueAdvice contains "long" or "short")
+                            advice = st_data.get("valueAdvice", "")
+                            indicators["supertrend"] = {
+                                "value": st_data.get("valueSupertrend"),
+                                "advice": advice  # "long" or "short"
+                            }
+                            logger.info(f"📊 {symbol} supertrend 4h: {advice.upper()}")
                 except Exception as e:
                     logger.debug(f"Supertrend fetch failed for {symbol}: {e}")
+
+            # Optionally fetch RSI/MACD for high-momentum coins
+            # (commented out to save rate limits - supertrend is the priority)
+            # rsi_config = [{"id": "rsi", "indicator": "rsi", "period": 14}]
+            # bulk_1h = await asyncio.to_thread(
+            #     self.taapi_client.fetch_bulk_indicators, taapi_symbol, "1h", rsi_config
+            # )
+            # if bulk_1h and "rsi" in bulk_1h:
+            #     indicators["rsi"] = bulk_1h["rsi"].get("value")
 
             return indicators
 
@@ -540,7 +545,7 @@ class UniversalScanner:
         Returns:
             List of UniversalOpportunity sorted by score
         """
-        logger.info(f"Starting universal market scan (top {top_n} coins)...")
+        logger.info(f"Starting universal market scan (top {top_n} coins, use_taapi={self.use_taapi}, taapi_client={self.taapi_client is not None})...")
 
         # Fetch data from all sources in parallel
         coingecko_task = self.coingecko.get_top_coins(limit=top_n)
@@ -590,10 +595,11 @@ class UniversalScanner:
 
             # Get TAAPI indicators (only for available coins to save rate limits)
             taapi_data = {}
-            if is_available and self.use_taapi:
+            if is_available and self.use_taapi and self.taapi_client:
                 # CRITICAL: Always fetch supertrend for tradeable coins (trend filter)
                 # RSI/MACD fetched only for high potential coins to save rate limits
                 has_momentum = coin.price_change_1h > 2 or coin.price_change_1h < -2
+                logger.debug(f"Fetching TAAPI supertrend for {coin.symbol}")
                 taapi_data = await self._fetch_taapi_indicators(
                     coin.symbol,
                     include_supertrend=True  # Always fetch supertrend for trend filter
