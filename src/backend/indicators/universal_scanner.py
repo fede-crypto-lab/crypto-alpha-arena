@@ -575,7 +575,8 @@ class UniversalScanner:
                 logger.info(f"BTC correlation signal: {self._btc_momentum_signal:+.2f} (1h={coin.price_change_1h:+.1f}%, 24h={coin.price_change_24h:+.1f}%)")
                 break
 
-        opportunities = []
+        # === PASS 1: Calculate preliminary scores WITHOUT TAAPI (fast) ===
+        preliminary_results = []
 
         for coin in coins:
             # Skip low market cap
@@ -593,22 +594,63 @@ class UniversalScanner:
             if not include_non_tradeable and not is_available:
                 continue
 
-            # Get TAAPI indicators (only for available coins to save rate limits)
+            # Calculate preliminary score WITHOUT TAAPI data
+            prelim_score, signal, reasons, confidence = self._calculate_score(
+                coin, exch_data, {}, is_available
+            )
+
+            preliminary_results.append({
+                'coin': coin,
+                'is_available': is_available,
+                'exch_data': exch_data,
+                'prelim_score': prelim_score,
+                'signal': signal,
+                'reasons': reasons,
+                'confidence': confidence,
+            })
+
+        # Sort by preliminary score (absolute value for both long/short)
+        preliminary_results.sort(key=lambda x: abs(x['prelim_score']), reverse=True)
+
+        # === PASS 2: Fetch TAAPI supertrend ONLY for top N tradeable candidates ===
+        MAX_TAAPI_CALLS = 15  # Limit TAAPI calls to save rate limits
+        taapi_fetch_count = 0
+
+        opportunities = []
+
+        for item in preliminary_results:
+            coin = item['coin']
+            is_available = item['is_available']
+            exch_data = item['exch_data']
+
+            # Fetch TAAPI only for top tradeable coins
             taapi_data = {}
-            if is_available and self.use_taapi and self.taapi_client:
-                # CRITICAL: Always fetch supertrend for tradeable coins (trend filter)
-                # RSI/MACD fetched only for high potential coins to save rate limits
-                has_momentum = coin.price_change_1h > 2 or coin.price_change_1h < -2
-                logger.debug(f"Fetching TAAPI supertrend for {coin.symbol}")
+            should_fetch_taapi = (
+                is_available and
+                self.use_taapi and
+                self.taapi_client and
+                taapi_fetch_count < MAX_TAAPI_CALLS
+            )
+
+            if should_fetch_taapi:
+                logger.debug(f"Fetching TAAPI supertrend for {coin.symbol} (#{taapi_fetch_count + 1})")
                 taapi_data = await self._fetch_taapi_indicators(
                     coin.symbol,
-                    include_supertrend=True  # Always fetch supertrend for trend filter
+                    include_supertrend=True
                 )
+                taapi_fetch_count += 1
 
-            # Calculate score using weighted scoring
-            score, signal, reasons, confidence = self._calculate_score(
-                coin, exch_data, taapi_data, is_available
-            )
+            # Recalculate final score WITH TAAPI data (if available)
+            if taapi_data:
+                score, signal, reasons, confidence = self._calculate_score(
+                    coin, exch_data, taapi_data, is_available
+                )
+            else:
+                # Use preliminary results
+                score = item['prelim_score']
+                signal = item['signal']
+                reasons = item['reasons']
+                confidence = item['confidence']
 
             # Extract supertrend advice for display
             supertrend_data = taapi_data.get("supertrend")
@@ -638,6 +680,8 @@ class UniversalScanner:
                 reasons=reasons,
             )
             opportunities.append(opp)
+
+        logger.info(f"TAAPI calls: {taapi_fetch_count} (max {MAX_TAAPI_CALLS})")
 
         # Sort by score
         opportunities.sort(key=lambda x: x.score, reverse=True)
