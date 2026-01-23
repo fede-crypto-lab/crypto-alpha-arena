@@ -165,11 +165,13 @@ class TradingBotEngine:
         self.scan_max_dynamic = int(CONFIG.get("scan_max_dynamic", 3))
         self.scanner: Optional[UniversalScanner] = None
         if self.scan_enabled:
+            # Pass TAAPI client for supertrend fetching (critical for trend filter)
             self.scanner = get_universal_scanner(
                 exchange_api=self.hyperliquid,
+                taapi_client=self.taapi,  # Enable supertrend fetching
                 core_coins=assets
             )
-            self.logger.info(f"🔍 Universal scanner enabled: max {self.scan_max_dynamic} dynamic assets")
+            self.logger.info(f"🔍 Universal scanner enabled: max {self.scan_max_dynamic} dynamic assets (TAAPI: {self.taapi is not None})")
 
     async def _rate_limited_call(self, coro):
         """
