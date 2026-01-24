@@ -608,20 +608,47 @@ class TradingBotEngine:
                         atr: Optional[float] = None) -> Dict[str, Any]:
         """
         Validate and fix TP/SL prices with strict limits.
-        
+
         Rules:
         - BUY (LONG): TP > current_price, SL < current_price
         - SELL (SHORT): TP < current_price, SL > current_price
         - Max distance from entry: TP 20%, SL 15%
         - Prices rounded to tick size
-        
+        - ATR must be >= 0.5% of price (skip trade if too low)
+
         Returns:
-            Dict with 'tp_price', 'sl_price', 'warnings' list
+            Dict with 'tp_price', 'sl_price', 'warnings' list, 'skip_trade' bool
         """
         warnings = []
         validated_tp = tp_price
         validated_sl = sl_price
-        
+
+        # ===== STEP 0: ATR validation - skip trade if ATR too low =====
+        MIN_ATR_PCT = 0.5  # Minimum ATR as % of price
+        if atr is not None and current_price > 0:
+            atr_pct = (atr / current_price) * 100
+            if atr_pct < MIN_ATR_PCT:
+                warnings.append(f"❌ ATR troppo basso: {atr_pct:.2f}% < {MIN_ATR_PCT}% - impossibile calcolare TP/SL validi")
+                self.logger.warning(f"⚠️ {asset}: ATR={atr:.6f} ({atr_pct:.2f}% del prezzo) - SKIP TRADE")
+                return {
+                    'tp_price': None,
+                    'sl_price': None,
+                    'warnings': warnings,
+                    'used_fallback': False,
+                    'skip_trade': True
+                }
+        elif atr is None or atr <= 0:
+            # No ATR data available - skip trade for safety
+            warnings.append(f"❌ ATR non disponibile o zero - impossibile calcolare TP/SL")
+            self.logger.warning(f"⚠️ {asset}: ATR non disponibile - SKIP TRADE")
+            return {
+                'tp_price': None,
+                'sl_price': None,
+                'warnings': warnings,
+                'used_fallback': False,
+                'skip_trade': True
+            }
+
         # ===== STEP 1: Round prices to tick size =====
         if validated_tp is not None:
             original_tp = validated_tp
@@ -700,7 +727,8 @@ class TradingBotEngine:
             'tp_price': validated_tp,
             'sl_price': validated_sl,
             'warnings': warnings,
-            'used_fallback': used_fallback
+            'used_fallback': used_fallback,
+            'skip_trade': False
         }
 
     def _should_update_tpsl(self, tracked_trade: Dict, new_tp: Optional[float], 
@@ -2098,7 +2126,12 @@ class TradingBotEngine:
                                     validation = self._validate_tp_sl(asset, action, current_price, tp_price, sl_price, atr)
                                     for warning in validation['warnings']:
                                         self.logger.warning(f"⚠️ {warning}")
-                                    
+
+                                    # Skip proposal if ATR too low
+                                    if validation.get('skip_trade'):
+                                        self.logger.warning(f"⏭️ SKIPPING proposal {action} {asset}: ATR insufficiente")
+                                        continue
+
                                     risk_reward = None
                                     if validation['tp_price'] and validation['sl_price'] and current_price:
                                         potential_gain = abs(validation['tp_price'] - current_price) / current_price
@@ -2183,6 +2216,12 @@ class TradingBotEngine:
                                 validation = self._validate_tp_sl(asset, action, current_price, tp_price, sl_price, atr)
                                 for warning in validation['warnings']:
                                     self.logger.warning(f"⚠️ {warning}")
+
+                                # Skip trade if ATR too low (can't calculate valid TP/SL)
+                                if validation.get('skip_trade'):
+                                    self.logger.warning(f"⏭️ SKIPPING {action} {asset}: ATR insufficiente per TP/SL validi")
+                                    continue
+
                                 tp_price = validation['tp_price']
                                 sl_price = validation['sl_price']
 
@@ -2343,10 +2382,15 @@ class TradingBotEngine:
                                     validation = self._validate_tp_sl(asset, action_for_validation, current_price, tp_price, sl_price, atr)
                                     for warning in validation['warnings']:
                                         self.logger.warning(f"⚠️ {warning}")
-                                    
+
+                                    # Skip TP/SL update if ATR too low
+                                    if validation.get('skip_trade'):
+                                        self.logger.warning(f"⏭️ {asset}: ATR insufficiente, mantengo TP/SL esistenti")
+                                        continue
+
                                     validated_tp = validation['tp_price']
                                     validated_sl = validation['sl_price']
-                                    
+
                                     # Check if update is actually needed
                                     update_check = self._should_update_tpsl(tracked_trade, validated_tp, validated_sl)
                                     
@@ -2660,7 +2704,14 @@ class TradingBotEngine:
             validation = self._validate_tp_sl(proposal.asset, proposal.action, current_price, proposal.tp_price, proposal.sl_price, atr)
             for warning in validation['warnings']:
                 self.logger.warning(f"⚠️ {warning}")
-            
+
+            # Skip trade if ATR too low
+            if validation.get('skip_trade'):
+                self.logger.warning(f"⏭️ REJECTING proposal {proposal.asset}: ATR insufficiente per TP/SL validi")
+                proposal.status = 'rejected'
+                proposal.rejection_reason = "ATR insufficiente per calcolare TP/SL validi"
+                return
+
             await asyncio.sleep(0.3)
             if proposal.action == 'buy':
                 order_result = await self.hyperliquid.place_buy_order(proposal.asset, amount)
