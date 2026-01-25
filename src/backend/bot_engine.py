@@ -781,7 +781,7 @@ class TradingBotEngine:
         }
 
     # ===== ANTI-CHURN METHODS =====
-    def _is_trade_allowed(self, asset: str, action: str, current_position: Optional[Dict] = None) -> Dict[str, Any]:
+    async def _is_trade_allowed(self, asset: str, action: str, current_position: Optional[Dict] = None) -> Dict[str, Any]:
         """
         Check if a trade is allowed based on anti-churn rules.
 
@@ -844,6 +844,53 @@ class TradingBotEngine:
                     'reason': f'⏳ Position too new - hold {wait}s more (min hold: {self.MIN_HOLD_TIME}s)',
                     'wait_seconds': wait
                 }
+
+        # ===== SL PROTECTION CHECK =====
+        # Don't manually close a position if SL is still protecting it
+        if current_position:
+            current_side = current_position.get('side', '')
+            is_closing = (current_side == 'long' and action == 'sell') or \
+                        (current_side == 'short' and action == 'buy')
+
+            if is_closing:
+                # Find tracked trade with SL info
+                tracked = next((t for t in self.active_trades if t['asset'] == asset), None)
+
+                if tracked and tracked.get('sl_price'):
+                    sl_price = tracked['sl_price']
+
+                    try:
+                        current_price = await self.hyperliquid.get_current_price(asset)
+
+                        if current_side == 'long' and current_price > sl_price:
+                            # Price is still above SL - let SL do its job
+                            margin_pct = ((current_price - sl_price) / sl_price) * 100
+                            self.logger.info(
+                                f"🛡️ SL PROTECTION: {asset} LONG @ ${current_price:.4f} still above "
+                                f"SL @ ${sl_price:.4f} (+{margin_pct:.1f}%) - blocking manual close"
+                            )
+                            return {
+                                'allowed': False,
+                                'reason': f'🛡️ SL attivo a ${sl_price:.4f}, prezzo ${current_price:.4f} ancora sopra - lascia che SL gestisca l\'uscita',
+                                'wait_seconds': 0
+                            }
+
+                        elif current_side == 'short' and current_price < sl_price:
+                            # Price is still below SL - let SL do its job
+                            margin_pct = ((sl_price - current_price) / sl_price) * 100
+                            self.logger.info(
+                                f"🛡️ SL PROTECTION: {asset} SHORT @ ${current_price:.4f} still below "
+                                f"SL @ ${sl_price:.4f} (+{margin_pct:.1f}%) - blocking manual close"
+                            )
+                            return {
+                                'allowed': False,
+                                'reason': f'🛡️ SL attivo a ${sl_price:.4f}, prezzo ${current_price:.4f} ancora sotto - lascia che SL gestisca l\'uscita',
+                                'wait_seconds': 0
+                            }
+
+                    except Exception as e:
+                        self.logger.warning(f"⚠️ Could not check SL protection for {asset}: {e}")
+                        # Continue without this check if price fetch fails
 
         return {'allowed': True, 'reason': 'Trade allowed', 'wait_seconds': 0}
 
@@ -2057,7 +2104,7 @@ class TradingBotEngine:
                                         }
                                     break
 
-                            churn_check = self._is_trade_allowed(asset, action, current_pos)
+                            churn_check = await self._is_trade_allowed(asset, action, current_pos)
                             if not churn_check['allowed']:
                                 self.logger.warning(f"🚫 ANTI-CHURN: {asset} {action} blocked - {churn_check['reason']}")
                                 continue  # Skip this trade
