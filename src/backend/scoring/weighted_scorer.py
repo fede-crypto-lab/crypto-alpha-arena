@@ -160,13 +160,30 @@ class WeightedScorer:
         # ===== SUPERTREND PENALTY: Penalize counter-trend trades =====
         # Se supertrend è SHORT e score è positivo (BUY), riduci lo score del 50%
         # Se supertrend è LONG e score è negativo (SELL), riduci lo score del 50%
+        # CONTRARIAN OVERRIDE: In Extreme Fear + negative funding, reduce penalty
         supertrend_signal = signals.get("supertrend", 0)
+        funding_annual = market_data.get("funding_annualized_pct", 0)
+
+        # Check for contrarian conditions (Extreme Fear + very negative funding)
+        is_contrarian_long = fng_value < 20 and funding_annual < -100
+        is_contrarian_short = fng_value > 80 and funding_annual > 100
+
         if supertrend_signal == -1.0 and raw_score > 0:
-            logger.info(f"⚠️ {asset}: Score {raw_score:.3f} ridotto 50% per LONG contro supertrend SHORT")
-            raw_score = raw_score * 0.5
+            if is_contrarian_long:
+                # Contrarian override: reduce penalty from 50% to 20%
+                logger.info(f"🔥 {asset}: CONTRARIAN LONG - FNG={fng_value}, Funding={funding_annual:.0f}% - penalty ridotta a 20%")
+                raw_score = raw_score * 0.8
+            else:
+                logger.info(f"⚠️ {asset}: Score {raw_score:.3f} ridotto 50% per LONG contro supertrend SHORT")
+                raw_score = raw_score * 0.5
         elif supertrend_signal == 1.0 and raw_score < 0:
-            logger.info(f"⚠️ {asset}: Score {raw_score:.3f} ridotto 50% per SHORT contro supertrend LONG")
-            raw_score = raw_score * 0.5
+            if is_contrarian_short:
+                # Contrarian override: reduce penalty from 50% to 20%
+                logger.info(f"🔥 {asset}: CONTRARIAN SHORT - FNG={fng_value}, Funding={funding_annual:.0f}% - penalty ridotta a 20%")
+                raw_score = raw_score * 0.8
+            else:
+                logger.info(f"⚠️ {asset}: Score {raw_score:.3f} ridotto 50% per SHORT contro supertrend LONG")
+                raw_score = raw_score * 0.5
 
         # Apply FNG filter
         final_score = self._apply_fng_filter(raw_score, fng_value)
@@ -178,8 +195,10 @@ class WeightedScorer:
 
         # Apply RSI timing adjustment for entry confirmation
         # Supertrend 4h gives direction, RSI confirms entry timing
+        # CONTRARIAN OVERRIDE: Skip penalty in extreme fear/greed + funding conditions
         rsi_raw = market_data.get("intraday", {}).get("rsi14")
-        rsi_timing_boost = self._calculate_rsi_timing_boost(rsi_raw, final_score)
+        is_contrarian = is_contrarian_long or is_contrarian_short
+        rsi_timing_boost = self._calculate_rsi_timing_boost(rsi_raw, final_score, is_contrarian)
         final_confidence = min(1.0, confidence_after_volatility * rsi_timing_boost)  # Cap at 100%
 
         # Determine action
@@ -479,7 +498,8 @@ class WeightedScorer:
     def _calculate_rsi_timing_boost(
         self,
         rsi: Optional[float],
-        final_score: float
+        final_score: float,
+        is_contrarian: bool = False
     ) -> float:
         """
         Calculate RSI timing boost for entry confirmation.
@@ -488,6 +508,9 @@ class WeightedScorer:
         - RSI < 35 (oversold) + positive score → good long entry → boost 1.3x
         - RSI > 65 (overbought) + negative score → good short entry → boost 1.3x
         - Otherwise → suboptimal timing → reduce to 0.7x
+
+        CONTRARIAN OVERRIDE: In extreme fear/greed + funding conditions,
+        skip the 0.7x penalty (return 1.0 instead).
 
         This helps avoid entering longs at overbought levels and
         shorts at oversold levels, improving entry timing.
@@ -510,6 +533,11 @@ class WeightedScorer:
         if rsi > RSI_OVERBOUGHT and final_score < 0:
             logger.debug(f"RSI timing BOOST for SHORT: RSI={rsi:.1f} > {RSI_OVERBOUGHT}, score={final_score:.3f} < 0")
             return BOOST_MULTIPLIER
+
+        # Contrarian override: skip penalty in extreme conditions
+        if is_contrarian:
+            logger.info(f"🔥 RSI timing CONTRARIAN: RSI={rsi:.1f} - skipping 0.7x penalty")
+            return 1.0
 
         # Suboptimal timing: wait for better entry
         logger.debug(f"RSI timing REDUCE: RSI={rsi:.1f}, score={final_score:.3f} - waiting for better timing")
