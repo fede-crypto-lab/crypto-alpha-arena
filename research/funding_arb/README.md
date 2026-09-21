@@ -10,7 +10,7 @@ testnet — venga puntato addosso.
 
 ---
 
-## Verdetto in tre righe
+## Verdetto
 
 1. Lo **spread di funding cross-venue** (Hyperliquid ↔ OKX su BTC/ETH) **non
    copre le commissioni retail**. Misurato su 96 giorni: ogni configurazione
@@ -25,10 +25,20 @@ testnet — venga puntato addosso.
    rende **nove volte** quella selettiva, perché ogni trade in più costa 38bp e
    l'EWMA non prevede il funding abbastanza bene da ripagarli. Quando l'edge è un
    premio strutturale e non una previsione, ottimizzare le entrate è controproducente.
-4. Il vincolo "win rate costante > 50%" **non è il vincolo giusto** e, con i
-   volumi di trade che queste strategie generano, non è nemmeno verificabile
-   statisticamente su meno di un anno di dati. Sotto c'è la metrica da usare al
-   suo posto.
+4. **L'edge sta nella selezione trasversale, non nel timing.** La classifica del
+   funding fra coin *persiste* (ρ Spearman ≈ 0.65, mai negativa in 99 periodi), e
+   un book che tiene i 5 carry più ricchi rende **+2.84% APR** con il 96%+ del PnL
+   attribuibile al funding. **141 configurazioni su 144** testate sono positive:
+   è robustezza, non un picco di overfitting. Questa è anche l'unica
+   configurazione dello studio in cui il limite inferiore di Wilson supera il 50%.
+5. Il vincolo "win rate costante > 50%" **non è il vincolo giusto** e, con i
+   volumi di trade che queste strategie generano, quasi mai è verificabile
+   statisticamente. Sotto c'è la metrica da usare al suo posto.
+
+**Il numero da portarsi via:** l'edge è reale, strutturale e non direzionale, ma
+vale **1-3% APR sul capitale**, e la sua viabilità dipende interamente da un
+parametro che i dati storici non possono darmi — lo slippage reale di esecuzione
+sulle alt. Va misurato su testnet prima di qualsiasi altra cosa.
 
 ---
 
@@ -322,7 +332,145 @@ slippage reale, non i 2bp assunti qui).
 
 ---
 
-## 6. Rischi
+## 6. La selezione trasversale: dove l'edge c'è davvero
+
+Il §5 ha stabilito che il funding di *una* coin non si può prevedere. La selezione
+trasversale fa una scommessa diversa: non "il funding di questa coin è alto rispetto
+alla sua storia", ma **"quali coin stanno pagando di più rispetto alle altre,
+adesso"**. È una domanda meglio posta, perché la dispersione fra coin è enorme —
+la leva retail si accalca su quello che si muove, non si distribuisce.
+
+Snapshot dell'universo Hyperliquid (234 perp, 120 con OI > 1M $):
+
+```
+funding istantaneo annualizzato:  mediana +10.95%   p90 +100.1%   max +238.5%
+```
+
+La mediana sta sul *floor* del venue. Il novantesimo percentile è dieci volte tanto.
+
+### Il test di falsificazione
+
+La dispersione non basta: serve che la **classifica persista**. Se i leader di oggi
+sono casuali domani, il book è solo un generatore di commissioni. Misurato su 180
+giorni, 56 coin, finestre **non sovrapposte**:
+
+| finestra | periodi | ρ Spearman | ρ min | top quintile | mediana | bottom quintile | Q1−Q5 |
+|---|---|---|---|---|---|---|---|
+| 3g | 59 | **0.669** | +0.39 | +13.6% | +8.6% | −8.6% | +22.2% |
+| 7g | 24 | **0.649** | +0.48 | +12.1% | +8.0% | −7.1% | +19.2% |
+| 14g | 11 | **0.672** | +0.55 | +12.1% | +7.9% | −7.1% | +19.2% |
+| 30g | 5 | **0.639** | +0.48 | +12.3% | +8.2% | −2.8% | +15.1% |
+
+**ρ ≈ 0.65 su ogni orizzonte, e mai negativo in nessuno dei 99 periodi.** Il
+quintile più ricco va poi davvero a pagare il 12% annualizzato contro l'8% della
+mediana. La premessa regge.
+
+> Un dettaglio che ha quasi falsato il risultato: la prima versione di `spearman()`
+> non gestiva i **pareggi**. Il funding di Hyperliquid ha un floor dove decine di
+> coin stanno a un valore *identico*; assegnare loro ranghi arbitrari per ordine di
+> sort avrebbe prodotto lo stesso ordine in entrambe le finestre, fabbricando
+> accordo dove i dati non ne hanno. Con i ranghi medi corretti il risultato non è
+> cambiato (0.669 contro 0.670), quindi l'edge era reale — ma il test che lo ha
+> scoperto vale più della conferma.
+
+### Il book
+
+`portfolio.py` classifica l'universo sul funding realizzato nelle ultime 168h e
+tiene i primi N carry, ognuno individualmente delta-neutral (long spot / short
+perp, stessa coin, stesso notional). Il portafoglio non ha direzione netta: varia
+solo *quali* carry sono aperti.
+
+Configurazione migliore, 180 giorni, 24 coin, 5 slot, leva 1×, slippage 5bp:
+
+```
+ BOOK
+   rotations              14  (28/yr)
+   utilisation            77.86% of slot-hours filled
+   avg holding period     1201h (50.0 days)
+   coins                  NEAR, LIT, ZEC, ENA, XPL, HYPE, TAO, PUMP, AAVE, ONDO
+
+ P&L ATTRIBUTION
+   funding collected      $2,220.33
+   basis / hedge residual $13.76
+   fees + slippage        $-836.00   (37.42% of gross carry)
+   net                    $1,398.09
+
+ RETURNS
+   win rate               100.00%   [95% CI 78.47% - 100.00%]   SIGNIFICANT
+   APR                    2.84%
+   Sharpe (hourly, ann.)  1.92
+   max drawdown           $204.06 (0.20%)
+   liquidated legs        3
+```
+
+**È la prima configurazione di tutto lo studio in cui il limite inferiore
+dell'intervallo di Wilson supera il 50%** — il criterio originale, finalmente
+soddisfatto. Su un residuo di basis di 13.76 $ contro 2.220 $ di funding: non c'è
+rischio direzionale dentro questo numero.
+
+### Robustezza, non fortuna
+
+Un solo risultato ottimizzato non significa niente. Sweep su **144
+configurazioni** (slippage × slot × hold minimo × isteresi × lookback × frequenza):
+
+| slippage/ordine | config positive | APR max | APR mediano | APR min |
+|---|---|---|---|---|
+| 2bp | **48/48** | +3.3% | +1.8% | +1.1% |
+| 5bp | **48/48** | +2.9% | +1.4% | +0.7% |
+| 10bp | **45/48** | +2.3% | +0.8% | −0.3% |
+
+**141 configurazioni su 144 sono profittevoli**, con degrado monotono e ordinato
+all'aumentare dei costi. È il profilo di un edge reale, non di un picco di
+overfitting: se la profittabilità dipendesse da una combinazione fortunata di
+parametri, la mediana sarebbe intorno a zero e solo la coda positiva.
+
+E i driver sono tutti coerenti con la tesi "non fare churn":
+
+| leva di parametro | rotazioni | utilizzo | fee/carry | APR medio |
+|---|---|---|---|---|
+| isteresi stretta (exit_rank 12) | 14.7 | 45% | 64% | +1.19% |
+| isteresi larga (exit_rank 20) | **10.6** | **60%** | **52%** | **+1.79%** |
+| lookback 336h | — | 38% | — | +1.10% |
+| lookback 168h | — | **67%** | — | **+1.88%** |
+
+Meno rotazioni, più capitale impiegato, meno commissioni. Ogni volta.
+
+### Le tre cose che rovinano questo numero
+
+**1. Il turnover, se lo lasci fare.** La mia prima configurazione — isteresi
+stretta, uscita forzata a 21 giorni, 10bp di slippage — ha prodotto **fee pari al
+131.9% del carry lordo** e un APR di −0.90%. Stesso segnale, stessi dati, segno
+opposto. L'uscita forzata a scadenza era un default che avevo ereditato dalla
+modalità single-pair: su un book che deve uscire per decadimento di rango, un
+timer è costo puro. (Corretto: ora il default è 90 giorni in modalità portafoglio.)
+
+**2. Lo slippage sulle alt, che non posso misurare.** Il 2bp è ragionevole su BTC,
+non su un perp da 5M $ di open interest. La tabella sopra dice che a 10bp la
+mediana scende a +0.8% e tre configurazioni vanno sotto zero. **Questa è la
+variabile che decide se la strategia esiste, e i dati storici a candela non
+possono darmela**: servono fill reali su testnet.
+
+**3. Le liquidazioni restano, anche a leva 1×.** Tre gambe su quattordici sono
+state liquidate — a leva 1× sulla gamba short, cioè servivano rialzi sopra il
++99%. Sulle alt succede. Non è un problema di leva mal scelta: **sull'universo alt
+non esiste un'impostazione di leva che elimini il rischio di liquidazione**, perché
+la coda dei rendimenti non è limitata. Si mitiga solo con cross-margin, margine di
+scorta, o rinunciando alle coin più volatili — cioè proprio quelle che pagano.
+
+### Bias dichiarati
+
+- **Survivorship.** L'universo è selezionato sull'open interest di *oggi*. Le coin
+  delistate o collassate nei 180 giorni non ci sono, e quelle diventate grandi sono
+  incluse fin dall'inizio. Corregge verso l'alto, e non so di quanto.
+- **Sweep in-sample.** Le 144 configurazioni sono valutate sullo stesso campione.
+  Il numero da credere è la **mediana** (+1.4% a 5bp), non il massimo (+2.9%).
+- **Campione corto.** 180 giorni, in una finestra che è stata rialzista (+32% BTC,
+  +57% ETH). Il funding è strutturalmente più ricco nei mercati rialzisti: questo
+  campione vede il caso favorevole.
+
+---
+
+## 7. Rischi
 
 ### Modellati dal backtest
 
@@ -363,10 +511,19 @@ minuti chiamando un modello non è un risk manager.
 
 ---
 
-## 7. Uso
+## 8. Uso
 
 ```bash
-# Report completo su una coppia
+# 1. Il test di falsificazione: la classifica del funding persiste?
+python -m research.funding_arb.run --persistence --days 180 --universe-size 58
+
+# 2. Il book trasversale (la configurazione che funziona)
+python -m research.funding_arb.run --portfolio --days 180 \
+    --venue-a okx_spot --venue-b hyperliquid --universe-size 24 \
+    --max-positions 5 --entry-rank 5 --exit-rank 20 --rank-lookback 168 \
+    --min-hold 480 --leverage 1 --slippage-bps 5
+
+# 3. Report completo su una singola coppia
 python -m research.funding_arb.run --coins BTC ETH --days 365
 
 # Cash-and-carry (la gamba a è spot: vietato lo short)
@@ -398,7 +555,7 @@ Le risposte HTTP sono cachate in `.cache/` (gitignorata). `--no-cache` la svuota
 
 ---
 
-## 8. Cosa serve prima di passare al live
+## 9. Cosa serve prima di passare al live
 
 In ordine, e nessuno di questi passi è saltabile:
 
@@ -438,9 +595,20 @@ research/funding_arb/
 ├── venues.py     # adapter API pubbliche + cache su disco (HL, OKX, Bybit, Binance, spot)
 ├── costs.py      # modello di costo e curva di breakeven
 ├── dataset.py    # allineamento su griglia oraria causale, normalizzazione intervalli
-├── strategy.py   # EWMA causale dello spread, regole entry/exit
-├── backtest.py   # motore a eventi: funding discreto, basis, liquidazione isolata
-├── metrics.py    # expectancy, Wilson CI, Sharpe, drawdown, attribuzione PnL
-├── run.py        # CLI
-└── tests/        # 24 test, focalizzati su lookahead / normalizzazione / contabilità
+├── strategy.py    # EWMA causale dello spread, regole entry/exit (single-pair)
+├── backtest.py    # motore a eventi: funding discreto, basis, liquidazione isolata
+├── persistence.py # il test di falsificazione: rho di Spearman e quintili
+├── universe.py    # scoperta delle coin copribili (OI + esistenza dello spot)
+├── portfolio.py   # book trasversale: classifica l'universo, tiene i primi N
+├── metrics.py     # expectancy, Wilson CI, Sharpe, drawdown, attribuzione PnL
+├── run.py         # CLI (3 modalità: single-pair, --persistence, --portfolio)
+└── tests/         # 36 test, focalizzati su lookahead / normalizzazione /
+                   # contabilità / pareggi nel ranking
 ```
+
+## Ordine di lettura consigliato
+
+§3 (l'aritmetica del breakeven) e §6 (la selezione trasversale) sono le due
+sezioni che contano. Il resto documenta come ci sono arrivato, comprese due
+strade che non portano da nessuna parte — lo spread cross-venue e il timing
+temporale — che vale la pena conoscere per non ripercorrerle.

@@ -316,3 +316,175 @@ def test_a_high_win_rate_can_still_be_a_losing_strategy():
     assert m.win_rate > 0.5
     assert m.win_rate_lo95 < 0.5
     assert not m.beats_coinflip
+
+
+# ------------------------------------------------------- cross-sectional book
+
+from research.funding_arb.backtest import BacktestConfig as _Cfg  # noqa: E402
+from research.funding_arb.portfolio import (  # noqa: E402
+    PortfolioParams,
+    run_portfolio,
+    trailing_apr,
+)
+
+
+def build_carry(coin: str, perp_rate: float, hours: int = 900, price: float = 100.0):
+    """A spot/perp pair: leg a is cash (zero funding), leg b is the perp."""
+    pair = build_pair(rate_a=0.0, rate_b=perp_rate, hours=hours,
+                      interval_a=1.0, interval_b=8.0,
+                      prices_a=[price] * hours, prices_b=[price] * hours,
+                      fee_a=10.0, fee_b=5.0)
+    pair.coin = coin
+    return pair
+
+
+def test_trailing_apr_is_causal_and_absent_without_history():
+    """The ranking must not score a coin on funding the venue has not charged yet."""
+    pair = build_carry("X", 0.0004)
+
+    # A window that ends before the series begins has nothing to rank on - the
+    # coin stays out of the ranking instead of scoring as zero.
+    assert trailing_apr(pair, pair.grid[0] - HOUR_MS, window_hours=168) is None
+
+    # Raise the rate partway through; before the change the trailing mean must
+    # still show only the old rate.
+    cutover = pair.grid[500]
+    pair.b.funding = [
+        FundingPoint(p.time_ms, 0.0004 if p.time_ms <= cutover else 0.0040)
+        for p in pair.b.funding
+    ]
+    assert trailing_apr(pair, cutover, 168) == pytest.approx(annualize(0.0004, 8.0))
+    # Well after the change, the new rate dominates.
+    assert trailing_apr(pair, cutover + 168 * HOUR_MS, 168) == pytest.approx(
+        annualize(0.0040, 8.0)
+    )
+
+
+def test_book_never_exceeds_its_slot_count():
+    universe = {
+        c: build_carry(c, r)
+        for c, r in [("A", 0.0009), ("B", 0.0008), ("C", 0.0007), ("D", 0.0006)]
+    }
+    result = run_portfolio(
+        universe,
+        CostModel(long_taker_bps=10.0, short_taker_bps=5.0, slippage_bps=0.0),
+        PortfolioParams(max_positions=2, entry_rank=4, exit_rank=4,
+                        min_entry_apr=0.10, min_hold_hours=48, warmup_hours=200),
+        _Cfg(notional=10_000.0, leverage=3.0, leverage_a=1.0),
+    )
+    assert len(result.coins_traded) <= 4
+    assert 0.0 < result.utilisation <= 1.0
+    # Capital is sized for the slots, filled or not.
+    assert result.capital == pytest.approx(2 * (10_000.0 + 10_000.0 / 3))
+
+
+def test_ranking_prefers_the_richest_funding():
+    universe = {
+        "RICH": build_carry("RICH", 0.0009),
+        "POOR": build_carry("POOR", 0.00005),
+    }
+    result = run_portfolio(
+        universe,
+        CostModel(long_taker_bps=10.0, short_taker_bps=5.0, slippage_bps=0.0),
+        PortfolioParams(max_positions=1, entry_rank=1, exit_rank=2,
+                        min_entry_apr=0.10, min_hold_hours=48, warmup_hours=200),
+        _Cfg(notional=10_000.0, leverage=3.0, leverage_a=1.0),
+    )
+    assert result.coins_traded == ["RICH"]
+
+
+def test_the_absolute_floor_overrides_a_good_rank():
+    """Being the best of a bad universe is not a reason to pay a round trip."""
+    universe = {c: build_carry(c, 0.000002) for c in ("A", "B", "C")}
+    result = run_portfolio(
+        universe,
+        CostModel(long_taker_bps=10.0, short_taker_bps=5.0),
+        PortfolioParams(max_positions=2, entry_rank=2, exit_rank=3,
+                        min_entry_apr=0.15, warmup_hours=200),
+        _Cfg(notional=10_000.0, leverage=3.0, leverage_a=1.0),
+    )
+    assert result.trades == []
+    assert result.utilisation == 0.0
+
+
+def test_hysteresis_is_required_between_entry_and_exit_rank():
+    with pytest.raises(ValueError):
+        PortfolioParams(entry_rank=8, exit_rank=3)
+
+
+def test_book_pnl_is_funding_minus_fees_when_prices_are_flat():
+    universe = {"A": build_carry("A", 0.0009)}
+    costs = CostModel(long_taker_bps=10.0, short_taker_bps=5.0, slippage_bps=0.0)
+    result = run_portfolio(
+        universe, costs,
+        PortfolioParams(max_positions=1, entry_rank=1, exit_rank=2,
+                        min_entry_apr=0.10, min_hold_hours=48,
+                        max_hold_hours=10_000, warmup_hours=200),
+        _Cfg(notional=10_000.0, leverage=3.0, leverage_a=1.0),
+    )
+    assert result.trades
+    trade = result.trades[0]
+    settlements = len([p for p in universe["A"].b.funding
+                       if trade.entry_ms < p.time_ms <= trade.exit_ms])
+    assert trade.funding_pnl == pytest.approx(settlements * 10_000 * 0.0009)
+    assert trade.basis_pnl == pytest.approx(0.0, abs=1e-9)
+    assert result.liquidations == 0
+
+
+# ------------------------------------------------------- rank persistence
+
+from research.funding_arb.persistence import measure, spearman  # noqa: E402
+
+
+def test_spearman_recovers_a_monotonic_relationship():
+    assert spearman([1, 2, 3, 4, 5], [10, 20, 30, 40, 50]) == pytest.approx(1.0)
+    assert spearman([1, 2, 3, 4, 5], [50, 40, 30, 20, 10]) == pytest.approx(-1.0)
+
+
+def test_spearman_ignores_the_scale_of_outliers():
+    """Funding has a hard floor and a long right tail, so ranks beat levels."""
+    assert spearman([1, 2, 3, 4, 5], [1, 2, 3, 4, 10_000]) == pytest.approx(1.0)
+
+
+def test_spearman_is_defined_on_degenerate_input():
+    assert spearman([1, 2], [1, 2]) == 0.0          # too few points
+    assert spearman([1, 1, 1], [5, 5, 5]) == 0.0    # no variance
+
+
+def test_persistence_detects_a_stable_ranking():
+    """Coins with permanently different funding must show near-perfect rho."""
+    panel = {
+        f"C{i}": [FundingPoint(T0 + h * HOUR_MS, 0.00001 * i) for h in range(24 * 80)]
+        for i in range(1, 26)
+    }
+    result = measure(panel, T0, T0 + 80 * 24 * HOUR_MS, window_days=7,
+                     interval_hours=1.0)
+    assert result is not None
+    assert result.mean_rho > 0.95
+    assert result.top_quintile_apr > result.median_apr > result.bottom_quintile_apr
+    assert result.spread_apr > 0
+
+
+def test_persistence_reports_no_edge_on_a_shuffled_ranking():
+    """The control: funding that alternates sign period to period must not rank."""
+    import random
+    rng = random.Random(7)
+    panel = {}
+    for i in range(25):
+        pts = []
+        for h in range(24 * 80):
+            # Re-draw every 7 days, so the trailing window never predicts the next.
+            if h % (24 * 7) == 0:
+                rate = rng.uniform(-0.0001, 0.0003)
+            pts.append(FundingPoint(T0 + h * HOUR_MS, rate))
+        panel[f"C{i}"] = pts
+    result = measure(panel, T0, T0 + 80 * 24 * HOUR_MS, window_days=7,
+                     interval_hours=1.0)
+    assert result is not None
+    assert abs(result.mean_rho) < 0.5
+
+
+def test_persistence_needs_enough_coins():
+    panel = {f"C{i}": [FundingPoint(T0 + h * HOUR_MS, 0.0001) for h in range(24 * 60)]
+             for i in range(3)}
+    assert measure(panel, T0, T0 + 60 * 24 * HOUR_MS, 7, min_coins=20) is None

@@ -217,3 +217,60 @@ def format_report(result: BacktestResult, m: Metrics) -> str:
         if m.mean_spread_apr > 0 else "   entry selectivity      n/a",
         f"{'=' * 68}",
     ])
+
+
+def format_portfolio_report(result, m: Metrics) -> str:
+    """Summary for a cross-sectional book.
+
+    Two lines matter more than the headline return. **Utilisation** says how much
+    of the capital was actually earning: a book that sits 70% empty is not a 20%
+    APR strategy, it is a 6% one that occasionally looks good. **Turnover** says
+    how much of the gross carry went back to the exchange - on a strategy whose
+    whole thesis is "do not churn", it is the number that kills it first.
+    """
+    pct = lambda x: f"{x * 100:.2f}%"
+    usd = lambda x: f"${x:,.2f}"
+
+    gross = m.funding_pnl + m.basis_pnl
+    fee_share = m.fees_paid / gross if gross > 0 else float("inf")
+    rotations_per_year = (
+        m.n_trades / (result.span_hours / HOURS_PER_YEAR) if result.span_hours else 0.0
+    )
+
+    return "\n".join([
+        "=" * 68,
+        f" CROSS-SECTIONAL CARRY   {len(result.coins_traded)} coin negoziate,"
+        f" {result.params.max_positions} slot",
+        f" sample: {result.span_hours / 24:.0f} days"
+        f"   notional/leg: {usd(result.config.notional)}"
+        f"   capital: {usd(result.capital)}",
+        "=" * 68,
+        "",
+        " BOOK",
+        f"   rotations              {m.n_trades}  ({rotations_per_year:.0f}/yr)",
+        f"   utilisation            {pct(result.utilisation)} of slot-hours filled",
+        f"   avg holding period     {m.avg_hold_hours:.0f}h"
+        f" ({m.avg_hold_hours / 24:.1f} days)",
+        f"   coins                  {', '.join(result.coins_traded[:14])}"
+        + (" ..." if len(result.coins_traded) > 14 else ""),
+        "",
+        " P&L ATTRIBUTION",
+        f"   funding collected      {usd(m.funding_pnl)}",
+        f"   basis / hedge residual {usd(m.basis_pnl)}",
+        f"   fees + slippage        {usd(-m.fees_paid)}"
+        f"   ({pct(fee_share)} of gross carry)" if gross > 0 else
+        f"   fees + slippage        {usd(-m.fees_paid)}",
+        f"   net                    {usd(m.total_pnl)}",
+        "",
+        " RETURNS",
+        f"   win rate               {pct(m.win_rate)}"
+        f"   [95% CI {pct(m.win_rate_lo95)} - {pct(m.win_rate_hi95)}]"
+        f"   {'SIGNIFICANT' if m.beats_coinflip else 'not significant'}",
+        f"   expectancy/rotation    {usd(m.expectancy)}",
+        f"   return on capital      {pct(m.return_on_capital)}",
+        f"   APR                    {pct(m.apr)}",
+        f"   Sharpe (hourly, ann.)  {m.sharpe:.2f}",
+        f"   max drawdown           {usd(m.max_drawdown)} ({pct(m.max_drawdown_pct)})",
+        f"   liquidated legs        {m.liquidations}",
+        "=" * 68,
+    ])
