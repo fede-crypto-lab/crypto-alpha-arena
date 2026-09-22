@@ -470,7 +470,80 @@ scorta, o rinunciando alle coin più volatili — cioè proprio quelle che pagan
 
 ---
 
-## 7. Rischi
+## 7. Il costo di esecuzione, misurato invece che assunto
+
+L'unico input non misurabile del backtest era lo slippage. Le candele storiche non
+possono darlo: una barra oraria dice dove è andato il prezzo, non quanto sarebbe
+costato spingere 10.000 $ attraverso il book in quel momento. Quindi lo portavo
+come ipotesi — e l'intero verdetto ci oscillava sopra.
+
+**Non serve la testnet per risolverlo, e la testnet non lo risolverebbe.** Un book
+di testnet è una manciata di ordini sintetici: percorrerlo misura la testnet, non
+il mercato. Il book *pubblico* di mainnet è la fonte onesta, è gratuito, non
+richiede chiavi e leggerlo non rischia niente.
+
+`liquidity.py` percorre i book live e calcola il costo effettivo delle quattro
+attraversate di un carry (compra spot + vendi perp per aprire, vendi spot +
+compra perp per chiudere). Snapshot su 10.000 $ per gamba:
+
+| coin | round trip | spot buy | spot sell | perp sell | perp buy | profondità |
+|---|---|---|---|---|---|---|
+| BTC | **0.1bp** | 0.1 | 0.1 | 0.0 | 0.0 | 3.8M $ |
+| ETH | **1.1bp** | 0.5 | 0.5 | 0.0 | 0.0 | 6.0M $ |
+| HYPE | **1.9bp** | 0.1 | 1.3 | 0.5 | 0.1 | 85k $ |
+| ZEC | **2.9bp** | 0.3 | 2.5 | 0.0 | 0.0 | 634k $ |
+| TAO | 10.1bp | 4.8 | 1.4 | 1.6 | 2.3 | 54k $ |
+| AAVE | 15.9bp | 8.7 | 5.4 | 0.9 | 0.9 | 74k $ |
+| LIT | 22.9bp | 2.9 | 7.8 | 7.0 | 5.3 | 7k $ ⚠ |
+| NEAR | 27.6bp | 2.7 | 2.7 | 9.1 | 13.1 | 34k $ |
+| ONDO | 38.9bp | 4.8 | 2.9 | 13.0 | 18.2 | 26k $ |
+| ENA | 40.1bp | 4.5 | 3.3 | 16.9 | 15.5 | 55k $ |
+| XPL | 80.3bp | 11.6 | 8.3 | 31.6 | 28.8 | 32k $ |
+| PUMP | **488.4bp** | 5.2 | 5.1 | 250.3 | 227.8 | 1k $ ⚠ |
+
+⚠ = il book non assorbe la size; il numero è un limite inferiore, non una misura.
+
+**Il rapporto fra il coin più economico e il più caro è di 4.000 volte.** Un'unica
+cifra piatta di slippage è quindi l'input più fuorviante possibile in una strategia
+trasversale — perché il ranking, lasciato a sé, seleziona proprio le coin sottili:
+un tasso è alto in parte *perché* nessuno vuole stare dall'altra parte.
+
+### Il risultato con i costi veri
+
+`CostBook` porta il costo misurato per coin dentro il motore, e
+`--max-slippage-bps` esclude quelle fuori budget:
+
+```
+escluse per liquidità: LIT (book too thin), PONS (book too thin),
+                       VVV (book too thin), XPL (44bp round trip)
+universo tradabile: 20 coin
+
+   rotations              12  (24/yr)
+   utilisation            67.14%
+   funding collected      $1,724.75
+   basis / hedge residual $71.24
+   fees + slippage        $-721.71   (40.18% of gross carry)
+   net                    $1,074.28
+
+   win rate               83.33%   [95% CI 55.20% - 95.30%]   SIGNIFICANT
+   APR                    2.18%
+   Sharpe (hourly, ann.)  2.08
+   liquidated legs        3
+```
+
+**+2.18% APR** con costi misurati, contro +2.84% con l'ipotesi piatta a 5bp. Il
+limite inferiore di Wilson resta sopra il 50% (55.2%). La differenza fra i due
+numeri — circa 65bp di APR — è il prezzo di aver smesso di indovinare.
+
+> Un secondo bug di misura trovato qui: la prima versione troncava **entrambi** i
+> book a 20 livelli. Hyperliquid ne serve 20 e basta (è un limite reale del venue),
+> ma OKX ne serve 400, e i suoi book spot hanno prezzi molto granulari. Leggerne 20
+> su PUMP significava vedere 0 $ di profondità invece di 412.000 $. Lo slippage
+> delle alt risultava enormemente sovrastimato.
+
+---
+
+## 8. Rischi
 
 ### Modellati dal backtest
 
@@ -511,7 +584,7 @@ minuti chiamando un modello non è un risk manager.
 
 ---
 
-## 8. Uso
+## 9. Uso
 
 ```bash
 # 1. Il test di falsificazione: la classifica del funding persiste?
@@ -555,36 +628,83 @@ Le risposte HTTP sono cachate in `.cache/` (gitignorata). `--no-cache` la svuota
 
 ---
 
-## 9. Cosa serve prima di passare al live
+## 10. Runbook operativo
 
-In ordine, e nessuno di questi passi è saltabile:
+### Quello che NON serve
 
-1. **Allungare il campione.** 96 giorni non bastano. Da Railway, rifai il fetch
-   con Bybit o Binance come seconda gamba: hanno anni di storico e portano il
-   campione a un livello in cui l'intervallo di Wilson comincia a dire qualcosa.
-2. **Allargare l'universo.** BTC ed ETH sono gli asset con il funding più
-   efficiente, cioè i peggiori per questa strategia. Il funding ricco sta sulle
-   alt — dove però la liquidità è sottile e il rischio di liquidazione più alto.
-   Il framework è già multi-coin: `--coins SOL AVAX DOGE ...`.
-3. **Walk-forward, non backtest singolo.** Taratura dei parametri su una
-   finestra, misura su quella successiva, rolling. Uno sweep ottimizzato in-sample
-   come quelli del §5 è una descrizione del passato, non una previsione. Nota che
-   la configurazione vincente qui — quella passiva — *non ha parametri da tarare*,
-   ed è proprio per questo che è la più credibile delle due.
-4. **Misurare lo slippage vero.** Metti `execution_slip_bps` a un numero
-   ottenuto da fill reali su testnet, non a zero.
-5. **Paper trading con esecuzione reale.** Ordini su Hyperliquid testnet che
-   replicano i segnali, per misurare il ritardo fra le due gambe. È la variabile
-   che il backtest non può darti.
-6. **Solo allora**, capitale reale, e con la size più piccola che l'exchange
-   accetta.
+**TAAPI.** Il repo ha un client con `backtrack`/`results` per scaricare indicatori
+storici (EMA, MACD, RSI). Per questa strategia sono **irrilevanti**, e usarli
+sarebbe tornare all'approccio previsivo che è già fallito al §5: l'edge qui è un
+premio strutturale, pagato a chi fornisce il lato impopolare del book, non un
+pattern che un oscillatore possa anticipare. Il piano gratuito è anche limitato a
+1 richiesta ogni 15 secondi, quindi un download storico di massa non è comunque
+praticabile.
 
-Un avvertimento sulla scala, visto che l'ipotesi di lavoro è testnet/paper: a
-500-5.000 $ di capitale reale questa strategia **non ha senso economico**. Serve
-margine su due venue contemporaneamente, i size minimi sono ~10-20 $ per ordine,
-e un rendimento del 5% annuo su 2.000 $ fa 100 $ — meno del costo in tempo di
-tenerla in piedi. La soglia in cui il carry cross-venue inizia a ripagare
-l'infrastruttura è nell'ordine delle decine di migliaia di dollari.
+**La testnet, per validare l'edge.** Un book di testnet è una manciata di ordini
+sintetici: ci misureresti la testnet, non il mercato. Lo slippage — l'unico numero
+che mancava — si legge dal book *pubblico* di mainnet, gratis e senza rischio
+(§7). La testnet serve a una cosa sola, ed è il punto 4 qui sotto.
+
+### Quello che serve, in ordine
+
+**1. Accumulare la distribuzione dello slippage.** È l'unico passo che richiede
+tempo di calendario, e quindi l'unico che devi far partire tu. Uno snapshot
+singolo non basta: la profondità alle 3 di notte di domenica e quella durante una
+cascata di liquidazioni differiscono di un ordine di grandezza — e un carry va
+chiuso proprio nel secondo tipo di momento.
+
+```bash
+python -m research.funding_arb.run --liquidity --notional 10000 \
+    --universe-size 30 --sample-to data/liquidity.jsonl
+```
+
+Mettilo in cron **ogni ora** su Railway. Il file è JSON Lines, in append: ogni
+riga è uno snapshot per coin. Dopo 2-4 settimane hai una distribuzione, e il
+numero contro cui pianificare è un **percentile cattivo** (p90, p95), non la
+mediana. Rilanciando il comando ti stampa anche mediana e caso peggiore per coin.
+
+**2. Rifare il backtest con i costi veri.** Quando il file ha abbastanza
+campioni:
+
+```bash
+python -m research.funding_arb.run --portfolio --days 180 \
+    --venue-a okx_spot --venue-b hyperliquid --universe-size 24 \
+    --max-positions 5 --entry-rank 5 --exit-rank 20 --rank-lookback 168 \
+    --min-hold 480 --leverage 1 \
+    --use-measured-slippage --max-slippage-bps 40
+```
+
+Se l'APR regge con il p90 al posto dello snapshot istantaneo, la strategia esiste.
+Se non regge, hai risparmiato il capitale.
+
+**3. Allungare il campione storico.** 180 giorni in una finestra rialzista sono
+pochi, e il funding è strutturalmente più ricco in bull market. Da Railway, Bybit
+e Binance sono raggiungibili (da altri host CloudFront li blocca) e hanno anni di
+storico: rifai il §6 con `--venue-b bybit` per vedere se ρ ≈ 0.65 regge anche in
+un ribasso.
+
+**4. Solo adesso la testnet, e solo per l'impianto.** Non per validare l'edge, ma
+per verificare che la meccanica funzioni end-to-end: che le due gambe partano
+insieme, che gli arrotondamenti di size passino, che il codice si accorga di un
+fill parziale. `HYPERLIQUID_NETWORK=testnet` è già supportato in
+`config_loader.py`. La domanda a cui rispondere è una sola: **quanti secondi
+passano fra il fill della prima gamba e quello della seconda?** In quel buco sei
+direzionale, ed è l'unica variabile che né il book pubblico né i dati storici
+possono darti. Misurala e mettila in `CostModel.execution_slip_bps`.
+
+**5. Walk-forward prima del capitale reale.** Le 144 configurazioni del §6 sono
+valutate in-sample. Taratura su una finestra, misura su quella successiva, rolling.
+
+**6. Poi, e solo poi**, capitale reale alla size minima.
+
+### Un avvertimento sulla scala
+
+A 500-5.000 $ questa strategia **non ha senso economico**. Serve margine su due
+venue contemporaneamente, i size minimi sono ~10-20 $ per ordine, e il 2% annuo su
+2.000 $ fa 40 $. Peggio: la tabella del §7 misura lo slippage a 10.000 $ per
+gamba; a size più piccole paghi comunque il mezzo spread, che su una alt sottile
+può essere più largo dell'intero rendimento annuo. La soglia in cui il carry
+ripaga l'infrastruttura è nell'ordine delle decine di migliaia di dollari.
 
 ---
 
@@ -600,10 +720,12 @@ research/funding_arb/
 ├── persistence.py # il test di falsificazione: rho di Spearman e quintili
 ├── universe.py    # scoperta delle coin copribili (OI + esistenza dello spot)
 ├── portfolio.py   # book trasversale: classifica l'universo, tiene i primi N
+├── liquidity.py   # costo di esecuzione reale, percorrendo i book live
 ├── metrics.py     # expectancy, Wilson CI, Sharpe, drawdown, attribuzione PnL
-├── run.py         # CLI (3 modalità: single-pair, --persistence, --portfolio)
-└── tests/         # 36 test, focalizzati su lookahead / normalizzazione /
-                   # contabilità / pareggi nel ranking
+├── run.py         # CLI (4 modalità: single-pair, --persistence, --portfolio,
+│                  #      --liquidity)
+└── tests/         # 45 test: lookahead, normalizzazione, contabilità del funding,
+                   # pareggi nel ranking, aritmetica del book
 ```
 
 ## Ordine di lettura consigliato

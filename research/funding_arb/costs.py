@@ -11,7 +11,8 @@ defaults here are deliberately pessimistic rather than promotional.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Dict
 
 
 @dataclass(frozen=True)
@@ -77,3 +78,55 @@ def from_venues(long_venue, short_venue, **kwargs) -> CostModel:
         short_taker_bps=short_venue.taker_fee_bps,
         **kwargs,
     )
+
+
+@dataclass
+class CostBook:
+    """Per-coin costs, so a backtest stops pretending every coin executes alike.
+
+    A flat slippage figure is the single most misleading input in a
+    cross-sectional carry. Measured on live books, the round trip runs from under
+    1bp on BTC to several hundred on a thin perp - and the ranking, left alone,
+    selects precisely the thin ones, because a rate is high partly *because*
+    nobody will take the other side. Feeding one average into the book therefore
+    understates cost exactly where the positions are.
+    """
+
+    default: CostModel
+    per_coin: Dict[str, CostModel] = field(default_factory=dict)
+
+    def for_coin(self, coin: str) -> CostModel:
+        return self.per_coin.get(coin, self.default)
+
+    def tradable(self, coin: str, max_round_trip_bps: float) -> bool:
+        """Whether this coin's measured cost is inside the budget."""
+        return self.for_coin(coin).round_trip_bps <= max_round_trip_bps
+
+
+def as_cost_book(costs) -> CostBook:
+    """Accept either a single model or a book, so callers can pass either."""
+    return costs if isinstance(costs, CostBook) else CostBook(default=costs)
+
+
+def from_liquidity(measurements, long_venue, short_venue) -> CostBook:
+    """Build a per-coin book from `liquidity.scan` output.
+
+    The measured round trip covers all four crossings, so it is divided by four
+    to land in `slippage_bps`, which the model applies per order. Coins whose
+    book could not absorb the size are kept with the cost they did show, which is
+    a lower bound - the caller should be excluding them on `complete`, not
+    trusting the number.
+    """
+    default = CostModel(
+        long_taker_bps=long_venue.taker_fee_bps,
+        short_taker_bps=short_venue.taker_fee_bps,
+    )
+    per_coin = {
+        m.coin: CostModel(
+            long_taker_bps=long_venue.taker_fee_bps,
+            short_taker_bps=short_venue.taker_fee_bps,
+            slippage_bps=m.round_trip_slippage_bps / 4.0,
+        )
+        for m in measurements
+    }
+    return CostBook(default=default, per_coin=per_coin)

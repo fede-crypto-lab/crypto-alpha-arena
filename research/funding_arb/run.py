@@ -70,6 +70,17 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--min-oi", type=float, default=5e6, help="USD open interest floor")
     g.add_argument("--universe", nargs="+", default=None,
                    help="explicit coin list, bypassing discovery")
+    g.add_argument("--use-measured-slippage", action="store_true",
+                   help="measure each coin's execution cost from live books and "
+                        "use it instead of the flat --slippage-bps")
+    g.add_argument("--max-slippage-bps", type=float, default=None,
+                   help="with --use-measured-slippage: drop coins whose measured "
+                        "round trip exceeds this")
+    g.add_argument("--liquidity", action="store_true",
+                   help="measure real execution cost from live order books")
+    g.add_argument("--sample-to", default=None,
+                   help="append liquidity snapshots as JSON lines, to build a "
+                        "distribution by running this on a schedule")
     g.add_argument("--persistence", action="store_true",
                    help="only test whether the funding ranking persists, and stop")
     g.add_argument("--persistence-windows", default="3,7,14,30",
@@ -138,6 +149,36 @@ def _as_dict(result: BacktestResult, m: Metrics) -> dict:
     }
 
 
+def run_liquidity_mode(args) -> int:
+    """Replace the backtest's slippage assumption with a measurement."""
+    from .liquidity import format_scan, load_samples, sample_to_file, scan
+    from .universe import discover
+
+    spot, perp = get_venue(args.venue_a), get_venue(args.venue_b)
+    coins = args.universe or discover(min_open_interest=args.min_oi,
+                                      limit=args.universe_size)
+    rows = scan(spot, perp, coins, args.notional)
+
+    if args.sample_to:
+        sample_to_file(args.sample_to, rows)
+        history = load_samples(args.sample_to)
+        n = sum(len(v) for v in history.values())
+        print(f"appended {len(rows)} snapshots to {args.sample_to} "
+              f"({n} total across {len(history)} coins)\n")
+        if n > len(rows):
+            print(f"{'coin':<9}{'samples':>9}{'median':>10}{'worst':>10}")
+            print("-" * 38)
+            for coin, values in sorted(history.items(),
+                                       key=lambda kv: -max(kv[1])):
+                ordered = sorted(values)
+                print(f"{coin:<9}{len(values):>9}"
+                      f"{ordered[len(ordered) // 2]:>9.1f}b{ordered[-1]:>9.1f}b")
+            print()
+
+    print(format_scan(rows, assumed_bps=args.slippage_bps))
+    return 0
+
+
 def run_persistence_mode(args) -> int:
     """Falsify the cross-sectional premise before backtesting a book on it."""
     from .persistence import fetch_funding_panel, format_persistence, measure
@@ -181,7 +222,38 @@ def run_portfolio_mode(args) -> int:
           f"({args.venue_a} spot / {args.venue_b} perp)\n")
 
     spot_venue, perp_venue = get_venue(args.venue_a), get_venue(args.venue_b)
-    costs = from_venues(spot_venue, perp_venue, slippage_bps=args.slippage_bps)
+
+    if args.use_measured_slippage:
+        from .costs import from_liquidity
+        from .liquidity import scan
+
+        rows = scan(spot_venue, perp_venue, list(universe), args.notional)
+        costs = from_liquidity(rows, spot_venue, perp_venue)
+        measured = {r.coin: r for r in rows}
+
+        # A coin whose book could not absorb the size has a cost we only know a
+        # lower bound for, so it is dropped rather than traded on a guess.
+        dropped = {c: "book too thin" for c, r in measured.items() if not r.complete}
+        if args.max_slippage_bps is not None:
+            dropped.update({
+                c: f"{r.round_trip_slippage_bps:.0f}bp round trip"
+                for c, r in measured.items()
+                if r.complete and r.round_trip_slippage_bps > args.max_slippage_bps
+            })
+        dropped.update({c: "not measured" for c in universe if c not in measured})
+
+        for coin in dropped:
+            universe.pop(coin, None)
+        if dropped:
+            print("escluse per liquidità: "
+                  + ", ".join(f"{c} ({why})" for c, why in sorted(dropped.items())))
+        print(f"universo tradabile: {len(universe)} coin\n")
+        if not universe:
+            print("nessuna coin supera il filtro di liquidità", file=sys.stderr)
+            return 1
+    else:
+        costs = from_venues(spot_venue, perp_venue, slippage_bps=args.slippage_bps)
+
     params = PortfolioParams(
         max_positions=args.max_positions,
         rank_lookback_hours=args.rank_lookback,
@@ -217,6 +289,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         from .venues import CACHE_DIR
         shutil.rmtree(CACHE_DIR, ignore_errors=True)
 
+    if args.liquidity:
+        return run_liquidity_mode(args)
     if args.persistence:
         return run_persistence_mode(args)
     if args.portfolio:

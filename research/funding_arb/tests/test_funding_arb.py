@@ -488,3 +488,84 @@ def test_persistence_needs_enough_coins():
     panel = {f"C{i}": [FundingPoint(T0 + h * HOUR_MS, 0.0001) for h in range(24 * 60)]
              for i in range(3)}
     assert measure(panel, T0, T0 + 60 * 24 * HOUR_MS, 7, min_coins=20) is None
+
+
+# ------------------------------------------------------ measured execution cost
+
+from research.funding_arb.costs import CostBook, as_cost_book, from_liquidity  # noqa: E402
+from research.funding_arb.liquidity import CarryLiquidity, walk  # noqa: E402
+
+
+def test_walking_one_level_costs_only_the_half_spread():
+    # Mid 100, best ask 101: crossing costs 100bp whatever the size within the level.
+    fill = walk([(101.0, 1000.0)], notional_usd=10_000, mid=100.0, is_buy=True)
+    assert fill.vwap == pytest.approx(101.0)
+    assert fill.slippage_bps == pytest.approx(100.0)
+    assert fill.filled
+
+
+def test_walking_several_levels_pays_the_volume_weighted_price():
+    # $5k at 100 then $5k at 102 -> VWAP is weighted by base units, not by price.
+    levels = [(100.0, 50.0), (102.0, 50.0)]  # $5,000 and $5,100
+    fill = walk(levels, notional_usd=10_000, mid=100.0, is_buy=True)
+    assert 100.0 < fill.vwap < 102.0
+    assert fill.slippage_bps > 0
+    assert fill.filled
+
+
+def test_selling_below_the_mid_is_also_a_cost():
+    """Slippage is signed as a cost on both sides, never negative for crossing."""
+    fill = walk([(99.0, 1000.0)], notional_usd=10_000, mid=100.0, is_buy=False)
+    assert fill.slippage_bps == pytest.approx(100.0)
+
+
+def test_a_book_too_thin_reports_a_lower_bound_not_a_fill():
+    fill = walk([(100.0, 1.0)], notional_usd=10_000, mid=100.0, is_buy=True)
+    assert not fill.filled
+    assert fill.depth_usd == pytest.approx(100.0)
+
+
+def test_walking_an_empty_book_does_not_divide_by_zero():
+    fill = walk([], notional_usd=10_000, mid=100.0, is_buy=True)
+    assert not fill.filled
+    assert fill.slippage_bps == 0.0
+
+
+def test_cost_book_falls_back_to_the_default():
+    default = CostModel(long_taker_bps=10.0, short_taker_bps=5.0, slippage_bps=2.0)
+    cheap = CostModel(long_taker_bps=10.0, short_taker_bps=5.0, slippage_bps=0.1)
+    book = CostBook(default=default, per_coin={"BTC": cheap})
+    assert book.for_coin("BTC") is cheap
+    assert book.for_coin("NEVER_MEASURED") is default
+
+
+def test_cost_book_gates_on_the_round_trip_budget():
+    book = CostBook(
+        default=CostModel(long_taker_bps=10.0, short_taker_bps=5.0, slippage_bps=2.0),
+        per_coin={"THIN": CostModel(long_taker_bps=10.0, short_taker_bps=5.0,
+                                    slippage_bps=120.0)},
+    )
+    assert book.tradable("BTC", max_round_trip_bps=60.0)
+    assert not book.tradable("THIN", max_round_trip_bps=60.0)
+
+
+def test_a_single_model_is_accepted_wherever_a_book_is():
+    model = CostModel(long_taker_bps=10.0, short_taker_bps=5.0)
+    book = as_cost_book(model)
+    assert book.for_coin("anything") is model
+    assert as_cost_book(book) is book
+
+
+def test_measured_round_trip_is_spread_over_the_four_crossings():
+    """slippage_bps is charged per order, so a 40bp round trip is 10bp each."""
+    measurement = CarryLiquidity(
+        coin="TAO", notional=10_000.0, round_trip_slippage_bps=40.0,
+        spot_buy_bps=10.0, spot_sell_bps=10.0, perp_sell_bps=10.0, perp_buy_bps=10.0,
+        spot_depth_usd=1e6, perp_depth_usd=1e6, complete=True, timestamp_ms=0,
+    )
+    spot = FakeVenue("okx_spot", 1.0, taker_fee_bps=10.0, funding=[], marks=[])
+    perp = FakeVenue("hyperliquid", 1.0, taker_fee_bps=4.5, funding=[], marks=[])
+    book = from_liquidity([measurement], spot, perp)
+    assert book.for_coin("TAO").slippage_bps == pytest.approx(10.0)
+    # fees (10 + 4.5) + slippage (2 x 10) per side, doubled for the round trip
+    assert book.for_coin("TAO").round_trip_bps == pytest.approx(2 * (14.5 + 20.0))

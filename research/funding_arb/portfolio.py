@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 from .backtest import BacktestConfig, Trade, _OpenPosition, _bucket_funding, _close
-from .costs import CostModel
+from .costs import CostModel, as_cost_book
 from .dataset import HOUR_MS, Pair
 
 logger = logging.getLogger(__name__)
@@ -119,7 +119,8 @@ def run_portfolio(
     if not universe:
         raise ValueError("empty universe")
 
-    result = PortfolioResult(config=config, costs=costs, params=params)
+    book = as_cost_book(costs)
+    result = PortfolioResult(config=config, costs=book.default, params=params)
     funding_buckets = {
         coin: (_bucket_funding(pair.a), _bucket_funding(pair.b))
         for coin, pair in universe.items()
@@ -162,7 +163,8 @@ def run_portfolio(
             maint = config.maintenance_margin_frac * q
             if (long_leg_pnl <= -(q / lev_long - maint)
                     or short_leg_pnl <= -(q / lev_short - maint)):
-                fees = (costs.entry_cost(q) + costs.exit_cost(q)
+                cc = book.for_coin(coin)
+                fees = (cc.entry_cost(q) + cc.exit_cost(q)
                         + q * config.liquidation_penalty_bps / 10_000.0)
                 trade = _close(pair, pos, t, q, long_leg_pnl + short_leg_pnl,
                                fees, "liquidation", liquidated=True)
@@ -194,7 +196,8 @@ def run_portfolio(
                 if legs is None:
                     continue
                 basis = legs[0] + legs[1]
-                fees = costs.entry_cost(q) + costs.exit_cost(q)
+                cc = book.for_coin(coin)
+                fees = cc.entry_cost(q) + cc.exit_cost(q)
                 trade = _close(universe[coin], pos, t, q, basis, fees, reason)
                 result.trades.append(trade)
                 realized += trade.net_pnl
@@ -230,7 +233,8 @@ def run_portfolio(
         legs = _leg_pnl(universe[coin], pos, t, q)
         if legs is None:
             continue
-        fees = costs.entry_cost(q) + costs.exit_cost(q)
+        cc = book.for_coin(coin)
+        fees = cc.entry_cost(q) + cc.exit_cost(q)
         result.trades.append(
             _close(universe[coin], pos, t, q, legs[0] + legs[1], fees, "end_of_sample")
         )
