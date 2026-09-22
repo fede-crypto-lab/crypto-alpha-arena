@@ -631,7 +631,91 @@ NEAR passa da 30.3% a **0.0%** di snapshot non coperti.
 
 ---
 
-## 9. Rischi
+## 9. Il backtest lungo, e la cosa che non avevo modellato
+
+Hyperliquid dà 3 anni di funding ma solo 208 giorni di candele, quindi un carry
+HL non si può backtestare a lungo con il basis misurato. MEXC sì: **funding da
+aprile 2025, candele perp dal 2023, spot dal 2023**, tutto raggiungibile senza
+restrizioni geografiche. Spot e perp sullo stesso venue significa che il basis è
+quello vero, non un proxy.
+
+540 giorni, stesso motore, stessi parametri. Cambia solo l'universo:
+
+| universo | funding | basis | fee | netto | APR | liquidazioni | win rate |
+|---|---|---|---|---|---|---|---|
+| 24 coin, **incluse le alt sottili** | +$1.933 | **−$1.322** | −$894 | −$283 | **−0.19%** | 7 | 68.8% (non significativo) |
+| 21 coin, **solo liquide** | +$2.460 | **−$70** | −$966 | **+$1.424** | **+0.96%** | 3 | **75% [CI 55.1–88.0] SIGNIFICATIVO** |
+
+**Il residuo di copertura migliora di 19 volte.** Ed è tutto lì: il funding
+incassato è simile, le commissioni sono simili, quello che ribalta il segno è il
+basis.
+
+### Perché: la copertura statica si sfalda quando il prezzo corre
+
+Il trade peggiore è PONS, −$1.259 di basis su una gamba da 10.000 $ in 81 ore.
+Ho controllato i marks a mano, perché un numero così su spot e perp *dello stesso
+venue* sembrava un bug:
+
+```
+entrata:  spot 0.00973   perp 0.00940    perp 3.4% SOTTO lo spot
+uscita:   spot 0.01867   perp 0.01922    perp 2.9% SOPRA lo spot
+gamba long  +91.9%   gamba short  −104.5%   somma  −12.6%
+```
+
+Il rapporto perp/spot si è mosso del **6.5%**. La perdita è del **12.6%**. Il
+fattore due non è un errore: **il prezzo è quasi raddoppiato durante l'hold**, e
+in una coppia aperta a notional uguale le due gambe si sbilanciano man mano che
+il prezzo corre. Un movimento del basis si applica a una posizione che nel
+frattempo è cresciuta, quindi il costo in dollari si amplifica.
+
+Non è un difetto del backtest — un controllo di invarianza su ogni trade chiuso
+conferma che il basis registrato coincide al centesimo con quello implicito nei
+marks. È **l'assenza di ribilanciamento della copertura**, che questo motore non
+fa e che i desk veri fanno. Le alternative sono due, entrambe con un prezzo:
+ribilanciare (paghi commissioni a ogni aggiustamento) oppure escludere le coin
+che possono raddoppiare durante un hold — cioè, di nuovo, proprio quelle che
+pagano il funding più alto.
+
+E le liquidazioni di PONS sono reali, non artefatti: il token è più che
+raddoppiato **tre volte** in 540 giorni, e a leva 1× la gamba short salta sopra
+il +99.5%.
+
+### La qualità della copertura è una dimensione a sé
+
+`liquidity.py` e `depth_history.py` chiedono entrambi *quanto costa attraversare
+il book*. Nessuno dei due vede se la copertura tiene. Una coin può avere un book
+perfettamente servibile e un perp che deriva dallo spot. `basis.py` misura la
+cosa che finisce davvero nel PnL: non il livello del basis ma il suo **cambiamento
+durante l'holding period** — entri a un basis, esci a un altro, la differenza è
+tua che tu la voglia o no.
+
+Movimento del basis su un hold di 20 giorni, MEXC perp vs spot, 540 giorni:
+
+| coin | p99 | mesi di carry persi |
+|---|---|---|
+| ETH | 0.07% | 0.0 |
+| SOL, XRP, DOGE, LTC, SUI | 0.10–0.16% | 0.1 |
+| NEAR, ENA, TAO, AAVE, ONDO | 0.23–0.27% | 0.1–0.2 |
+| XPL | 0.43% | 0.3 |
+| VVV, LIT | 0.83–0.95% | 0.5–0.6 |
+| **HYPE** | **1.66%** | **1.0** |
+
+22 coin su 23 tengono una copertura degna del nome (p99 sotto l'1%). Un livello
+di basis costante non costa niente — entri ed esci allo stesso; è il movimento
+che paghi.
+
+### Nota metodologica: il throttling stava falsando l'universo
+
+Durante questi run MEXC ha iniziato a rispondere 403 a metà caricamento, e
+`load_universe` scartava in silenzio le coin in volo — BTC, AAVE, BCH e DOT sono
+sparite da un run. Un universo che dipende da quali richieste sono passate non è
+riproducibile, e la selezione ne risulta distorta. Ora c'è un rate limiter per
+host (`_HOST_MIN_INTERVAL`) e 7 tentativi con backoff limitato: pacing non per
+cortesia, ma per correttezza.
+
+---
+
+## 10. Rischi
 
 ### Modellati dal backtest
 
@@ -672,7 +756,7 @@ minuti chiamando un modello non è un risk manager.
 
 ---
 
-## 10. Uso
+## 11. Uso
 
 ```bash
 # 1. Il test di falsificazione: la classifica del funding persiste?
@@ -716,7 +800,7 @@ Le risposte HTTP sono cachate in `.cache/` (gitignorata). `--no-cache` la svuota
 
 ---
 
-## 11. Runbook operativo
+## 12. Runbook operativo
 
 ### Quello che NON serve
 
@@ -809,11 +893,13 @@ research/funding_arb/
 ├── portfolio.py   # book trasversale: classifica l'universo, tiene i primi N
 ├── liquidity.py   # costo di esecuzione reale, percorrendo i book live
 ├── depth_history.py # distribuzione storica del costo, dagli archivi Binance
+├── basis.py       # qualita' della copertura: deriva perp-spot sull'holding
 ├── metrics.py     # expectancy, Wilson CI, Sharpe, drawdown, attribuzione PnL
-├── run.py         # CLI (5 modalità: single-pair, --persistence, --portfolio,
-│                  #      --liquidity, --depth-history)
-└── tests/         # 54 test: lookahead, normalizzazione, contabilità del funding,
-                   # pareggi nel ranking, aritmetica del book, righe corrotte
+├── run.py         # CLI (6 modalità: single-pair, --persistence, --portfolio,
+│                  #      --liquidity, --depth-history, --basis)
+└── tests/         # 64 test: lookahead, normalizzazione, contabilità del funding,
+                   # pareggi nel ranking, aritmetica del book, righe corrotte,
+                   # qualità della copertura
 ```
 
 ## Ordine di lettura consigliato

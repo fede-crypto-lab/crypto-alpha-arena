@@ -12,7 +12,7 @@ defaults here are deliberately pessimistic rather than promotional.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict
+from typing import Dict, Optional, Sequence
 
 
 @dataclass(frozen=True)
@@ -25,11 +25,25 @@ class CostModel:
 
     long_taker_bps: float
     short_taker_bps: float
-    #: Market-impact + spread crossing beyond the quoted fee, per order.
+    #: Market-impact + spread crossing beyond the quoted fee, per order, on the
+    #: way IN. Entry is discretionary - a carry can wait for a calm book.
     slippage_bps: float = 2.0
+    #: Same on the way OUT, defaulting to the entry figure. It should usually be
+    #: worse, and often much worse: an exit is triggered by funding decaying or
+    #: flipping, which happens when the crowded side is being liquidated - that
+    #: is, precisely when depth has gone. Measured on Binance's archives, TAO and
+    #: ENA carry 99th-percentile costs 200-300x their median while NEAR and WLD
+    #: sit at 1.8x on near-identical medians, so a symmetric cost model does not
+    #: merely understate the exit, it fails to distinguish fragile books from
+    #: robust ones at all.
+    exit_slippage_bps: Optional[float] = None
     #: Fraction of notional lost when a leg has to be re-hedged after a partial fill,
     #: amortised per round trip. Set to 0 to model perfect simultaneous execution.
     execution_slip_bps: float = 0.0
+
+    @property
+    def _exit_slippage(self) -> float:
+        return self.slippage_bps if self.exit_slippage_bps is None else self.exit_slippage_bps
 
     @property
     def entry_bps(self) -> float:
@@ -43,7 +57,11 @@ class CostModel:
     @property
     def exit_bps(self) -> float:
         """Cost of closing both legs, in bp of one leg's notional."""
-        return self.entry_bps
+        return (
+            self.long_taker_bps + self.short_taker_bps
+            + 2 * self._exit_slippage
+            + self.execution_slip_bps
+        )
 
     @property
     def round_trip_bps(self) -> float:
@@ -129,4 +147,37 @@ def from_liquidity(measurements, long_venue, short_venue) -> CostBook:
         )
         for m in measurements
     }
+    return CostBook(default=default, per_coin=per_coin)
+
+
+def from_depth_history(stats: Sequence, long_venue, short_venue,
+                       exit_quantile: str = "p99") -> CostBook:
+    """Build a book that prices entry at the median and exit at the tail.
+
+    Takes `depth_history.DepthStats`. The asymmetry is the whole point: a carry
+    is opened when its operator chooses and closed when the market decides, and
+    the market decides during the moments when the book is thinnest. Pricing both
+    sides at the median assumes an exit that can be scheduled, which is the one
+    thing this strategy cannot do.
+
+    The archives are Binance's, so the *level* belongs to Binance. Their value
+    here is the ratio between a typical moment and a bad one, which travels
+    across venues far better than the absolute figure does.
+    """
+    default = CostModel(
+        long_taker_bps=long_venue.taker_fee_bps,
+        short_taker_bps=short_venue.taker_fee_bps,
+    )
+    per_coin = {}
+    for row in stats:
+        coin = row.symbol.replace("USDT", "")
+        tail = getattr(row, f"{exit_quantile}_bps")
+        per_coin[coin] = CostModel(
+            long_taker_bps=long_venue.taker_fee_bps,
+            short_taker_bps=short_venue.taker_fee_bps,
+            # The archive figure covers a round trip on one leg (in and out), so
+            # halving it gives the cost of a single crossing.
+            slippage_bps=row.median_bps / 2.0,
+            exit_slippage_bps=tail / 2.0,
+        )
     return CostBook(default=default, per_coin=per_coin)

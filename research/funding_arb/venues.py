@@ -56,9 +56,43 @@ class VenueError(RuntimeError):
     """Raised when a venue is unreachable or returns an unusable payload."""
 
 
+#: Minimum seconds between requests to a given host. Without this, MEXC starts
+#: returning 403 partway through a universe load and `load_universe` quietly
+#: drops whichever coins happened to be in flight - which silently biases the
+#: universe and makes a backtest irreproducible. Pacing is not politeness here,
+#: it is a correctness requirement.
+_HOST_MIN_INTERVAL = {
+    "contract.mexc.com": 0.35,
+    "api.mexc.com": 0.15,
+    "api.kucoin.com": 0.15,
+}
+_last_request: Dict[str, float] = {}
+
+
+def _throttle(url: str) -> None:
+    host = urllib.parse.urlparse(url).netloc
+    gap = _HOST_MIN_INTERVAL.get(host)
+    if not gap:
+        return
+    elapsed = time.monotonic() - _last_request.get(host, 0.0)
+    if elapsed < gap:
+        time.sleep(gap - elapsed)
+    _last_request[host] = time.monotonic()
+
+
 def _cache_path(key: str) -> str:
     digest = hashlib.sha256(key.encode()).hexdigest()[:24]
     return os.path.join(CACHE_DIR, f"{digest}.json")
+
+
+#: Some venues' CDNs reject unrecognised clients outright. MEXC answers an
+#: honest "funding-arb-research" UA with an HTML "Access Denied" page and the
+#: same request with a browser UA with data, so venues that need it say so
+#: rather than the whole module pretending to be a browser.
+BROWSER_UA = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/120.0 Safari/537.36"
+)
 
 
 def _http_json(
@@ -67,8 +101,9 @@ def _http_json(
     method: str = "GET",
     payload: Optional[Dict[str, Any]] = None,
     cache: bool = True,
-    retries: int = 4,
+    retries: int = 7,
     timeout: int = 30,
+    user_agent: Optional[str] = None,
 ) -> Any:
     key = f"{method} {url} {json.dumps(payload, sort_keys=True) if payload else ''}"
     path = _cache_path(key)
@@ -78,11 +113,16 @@ def _http_json(
             return json.load(fh)
 
     body = json.dumps(payload).encode() if payload is not None else None
-    headers = {"Content-Type": "application/json", "User-Agent": "funding-arb-research/1.0"}
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": user_agent or "funding-arb-research/1.0",
+        "Accept": "application/json",
+    }
 
     last_exc: Optional[Exception] = None
     for attempt in range(retries):
         try:
+            _throttle(url)
             req = urllib.request.Request(url, data=body, headers=headers, method=method)
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read().decode()
@@ -93,8 +133,13 @@ def _http_json(
                     json.dump(data, fh)
             return data
         except (urllib.error.URLError, json.JSONDecodeError, TimeoutError) as exc:
+            # A JSONDecodeError here is usually an HTML throttle page rather than
+            # a malformed payload, and those clear on their own - so it retries
+            # with the same backoff as a network failure instead of giving up.
             last_exc = exc
-            wait = 2 ** attempt
+            # Capped exponential backoff: a throttle clears in seconds, and
+            # doubling unbounded would stall a universe load for minutes.
+            wait = min(2 ** attempt, 20)
             logger.warning("%s %s failed (%s), retry in %ss", method, url, exc, wait)
             time.sleep(wait)
 
@@ -507,3 +552,155 @@ class BinanceSpot(SpotLeg):
 
 
 REGISTRY.update({v.name: v for v in (OKXSpot(), BinanceSpot())})
+
+
+# --------------------------------------------------------------------------
+# MEXC - the deepest funding history reachable without geo-restriction
+# --------------------------------------------------------------------------
+
+class MEXC(Venue):
+    """MEXC USDT perpetuals.
+
+    Included for one reason: reach. Hyperliquid carries three years of funding
+    but caps candles at 5,000 bars (208 hours of marks), and Bybit and Binance
+    are geo-blocked from several hosts. MEXC serves ~1.5 years of funding plus
+    candles back to 2023, from anywhere - which makes it the one venue where a
+    long cash-and-carry can be backtested end to end on a single book, with the
+    basis genuinely measured rather than assumed.
+
+    Its CDN rejects unrecognised user agents with an HTML error page, and
+    throttles intermittently even when accepted; both are handled as transient.
+    """
+
+    name = "mexc"
+    funding_interval_hours = 8.0
+    #: MEXC's published retail futures taker tier, materially below OKX's.
+    taker_fee_bps = 2.0
+
+    CONTRACT = "https://contract.mexc.com"
+    _FUNDING_PAGE = 100
+    _KLINE_SPAN_HOURS = 1900  # server caps a response at 2000 candles
+
+    def symbol(self, coin: str) -> str:
+        return f"{coin.upper()}_USDT"
+
+    def _get(self, url: str) -> Any:
+        return _http_json(url, user_agent=BROWSER_UA)
+
+    def fetch_funding(self, coin: str, start_ms: int, end_ms: int) -> List[FundingPoint]:
+        out: List[FundingPoint] = []
+        page = 1
+        while True:
+            q = urllib.parse.urlencode({
+                "symbol": self.symbol(coin),
+                "page_num": page,
+                "page_size": self._FUNDING_PAGE,
+            })
+            payload = self._get(f"{self.CONTRACT}/api/v1/contract/funding_rate/history?{q}")
+            if not payload.get("success"):
+                raise VenueError(f"MEXC funding error: {payload.get('code')}")
+            data = payload["data"]
+            rows = data.get("resultList") or []
+            if not rows:
+                break
+            for row in rows:
+                t = int(row["settleTime"])
+                if start_ms <= t <= end_ms:
+                    out.append(FundingPoint(t, float(row["fundingRate"])))
+            # Pages run newest-first, so stop once one ends before the window.
+            if min(int(r["settleTime"]) for r in rows) < start_ms:
+                break
+            if page >= int(data.get("totalPage", page)):
+                break
+            page += 1
+        return _dedupe(out)
+
+    def fetch_marks(self, coin: str, start_ms: int, end_ms: int) -> List[Mark]:
+        out: List[Mark] = []
+        cursor = start_ms // 1000
+        end_s = end_ms // 1000
+        span = self._KLINE_SPAN_HOURS * 3600
+        while cursor < end_s:
+            chunk_end = min(cursor + span, end_s)
+            q = urllib.parse.urlencode({"interval": "Min60", "start": cursor, "end": chunk_end})
+            payload = self._get(
+                f"{self.CONTRACT}/api/v1/contract/kline/{self.symbol(coin)}?{q}"
+            )
+            if not payload.get("success"):
+                raise VenueError(f"MEXC kline error: {payload.get('code')}")
+            data = payload.get("data") or {}
+            times, closes = data.get("time") or [], data.get("close") or []
+            for t, c in zip(times, closes):
+                out.append(Mark(int(t) * 1000, float(c)))
+            if chunk_end >= end_s:
+                break
+            cursor = chunk_end
+        return _dedupe(out)
+
+
+class MEXCSpot(SpotLeg):
+    """MEXC USDT spot - the cash leg of a single-venue carry, back to 2023."""
+
+    name = "mexc_spot"
+    taker_fee_bps = 5.0
+
+    BASE = "https://api.mexc.com"
+    _PAGE_HOURS = 480  # what the endpoint returns per call in practice
+
+    def symbol(self, coin: str) -> str:
+        return f"{coin.upper()}USDT"
+
+    def fetch_marks(self, coin: str, start_ms: int, end_ms: int) -> List[Mark]:
+        out: List[Mark] = []
+        cursor = start_ms
+        span = self._PAGE_HOURS * 3_600_000
+        while cursor < end_ms:
+            chunk_end = min(cursor + span, end_ms)
+            q = urllib.parse.urlencode({
+                "symbol": self.symbol(coin), "interval": "60m",
+                "startTime": cursor, "endTime": chunk_end, "limit": 1000,
+            })
+            rows = _http_json(f"{self.BASE}/api/v3/klines?{q}")
+            if isinstance(rows, dict):
+                raise VenueError(f"MEXC spot error: {rows}")
+            for row in rows:
+                out.append(Mark(int(row[0]), float(row[4])))
+            if chunk_end >= end_ms:
+                break
+            cursor = chunk_end
+        return _dedupe(out)
+
+
+class KuCoinSpot(SpotLeg):
+    """KuCoin USDT spot, also back to 2023 - a second opinion on the cash leg."""
+
+    name = "kucoin_spot"
+    taker_fee_bps = 10.0
+
+    BASE = "https://api.kucoin.com"
+    _PAGE_HOURS = 480
+
+    def symbol(self, coin: str) -> str:
+        return f"{coin.upper()}-USDT"
+
+    def fetch_marks(self, coin: str, start_ms: int, end_ms: int) -> List[Mark]:
+        out: List[Mark] = []
+        cursor = start_ms // 1000
+        end_s = end_ms // 1000
+        span = self._PAGE_HOURS * 3600
+        while cursor < end_s:
+            chunk_end = min(cursor + span, end_s)
+            q = urllib.parse.urlencode({
+                "type": "1hour", "symbol": self.symbol(coin),
+                "startAt": cursor, "endAt": chunk_end,
+            })
+            payload = _http_json(f"{self.BASE}/api/v1/market/candles?{q}")
+            for row in payload.get("data") or []:
+                out.append(Mark(int(row[0]) * 1000, float(row[2])))
+            if chunk_end >= end_s:
+                break
+            cursor = chunk_end
+        return _dedupe(out)
+
+
+REGISTRY.update({v.name: v for v in (MEXC(), MEXCSpot(), KuCoinSpot())})

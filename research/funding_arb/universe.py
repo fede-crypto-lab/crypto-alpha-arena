@@ -67,6 +67,8 @@ def load_universe(
     perp_venue: Venue,
     start_ms: int,
     end_ms: int,
+    marks_spot: Optional[Venue] = None,
+    marks_perp: Optional[Venue] = None,
 ) -> Dict[str, Pair]:
     """Load every coin as a spot/perp pair, skipping the ones that fail.
 
@@ -77,7 +79,8 @@ def load_universe(
     universe: Dict[str, Pair] = {}
     for coin in coins:
         try:
-            universe[coin] = load_pair(spot_venue, perp_venue, coin, start_ms, end_ms)
+            universe[coin] = load_pair(spot_venue, perp_venue, coin, start_ms, end_ms,
+                                       marks_a=marks_spot, marks_b=marks_perp)
         except Exception as exc:  # noqa: BLE001 - one bad listing must not stop the run
             logger.warning("skipping %s: %s", coin, exc)
     if not universe:
@@ -93,6 +96,12 @@ def default_universe(
     min_open_interest: float = 5e6,
     limit: int = 24,
     coins: Optional[List[str]] = None,
+    marks_spot: Optional[str] = None,
+    marks_perp: Optional[str] = None,
 ) -> Dict[str, Pair]:
     chosen = coins or discover(min_open_interest=min_open_interest, limit=limit)
-    return load_universe(chosen, get_venue(spot), get_venue(perp), start_ms, end_ms)
+    return load_universe(
+        chosen, get_venue(spot), get_venue(perp), start_ms, end_ms,
+        marks_spot=get_venue(marks_spot) if marks_spot else None,
+        marks_perp=get_venue(marks_perp) if marks_perp else None,
+    )

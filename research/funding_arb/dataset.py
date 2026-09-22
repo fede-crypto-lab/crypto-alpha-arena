@@ -18,7 +18,7 @@ OKX settlements is credited exactly three times.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List, Sequence, Tuple
+from typing import List, Optional, Sequence, Tuple
 
 from .venues import HOURS_PER_YEAR, FundingPoint, Mark, Venue
 
@@ -96,16 +96,30 @@ def load_pair(
     coin: str,
     start_ms: int,
     end_ms: int,
+    marks_a: Optional[Venue] = None,
+    marks_b: Optional[Venue] = None,
 ) -> Pair:
-    """Fetch both venues and build the aligned pair."""
+    """Fetch both venues and build the aligned pair.
+
+    `marks_a` / `marks_b` source a leg's prices from a different venue than its
+    funding. That exists for one specific, declared trade-off: Hyperliquid
+    publishes three years of funding but caps candles at 5,000 bars, so a long
+    backtest of an HL carry has to borrow its marks. Borrowing them means the
+    basis measured is the proxy venue's, not HL's - a real perp-vs-spot basis,
+    but not the one this exact position would have run. Say so wherever the
+    result is reported; do not quietly treat it as the same number.
+
+    Sourcing both legs' marks from the SAME venue is worse still: it forces the
+    basis to zero by construction and turns the hedge residual into an artefact.
+    """
     series = []
-    for venue in (venue_a, venue_b):
+    for venue, mark_source in ((venue_a, marks_a or venue_a), (venue_b, marks_b or venue_b)):
         funding = venue.fetch_funding(coin, start_ms, end_ms)
         if not funding:
             raise ValueError(f"{venue.name}: no funding data for {coin} in window")
-        marks = venue.fetch_marks(coin, start_ms, end_ms)
+        marks = mark_source.fetch_marks(coin, start_ms, end_ms)
         if not marks:
-            raise ValueError(f"{venue.name}: no marks for {coin} in window")
+            raise ValueError(f"{mark_source.name}: no marks for {coin} in window")
         series.append(
             VenueSeries(
                 venue=venue,

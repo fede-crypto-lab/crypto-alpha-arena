@@ -68,6 +68,10 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--decision-every", type=int, default=8, help="hours")
     g.add_argument("--universe-size", type=int, default=24)
     g.add_argument("--min-oi", type=float, default=5e6, help="USD open interest floor")
+    g.add_argument("--marks-a", default=None,
+                   help="source leg a's prices from this venue instead (see "
+                        "load_pair: the basis measured is then the proxy's)")
+    g.add_argument("--marks-b", default=None, help="same for leg b")
     g.add_argument("--universe", nargs="+", default=None,
                    help="explicit coin list, bypassing discovery")
     g.add_argument("--use-measured-slippage", action="store_true",
@@ -76,6 +80,10 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--max-slippage-bps", type=float, default=None,
                    help="with --use-measured-slippage: drop coins whose measured "
                         "round trip exceeds this")
+    g.add_argument("--basis", action="store_true",
+                   help="measure hedge quality: how far perp drifts from spot "
+                        "over a holding period (not the same as execution cost)")
+    g.add_argument("--basis-hold", type=int, default=480, help="hours")
     g.add_argument("--depth-history", action="store_true",
                    help="historical execution cost from Binance's public bookDepth "
                         "archives - gives the distribution without waiting for one")
@@ -151,6 +159,21 @@ def _as_dict(result: BacktestResult, m: Metrics) -> dict:
             for t in result.trades
         ],
     }
+
+
+def run_basis_mode(args) -> int:
+    """Does the hedge hold? The question execution-cost metrics cannot answer."""
+    from .basis import format_scan, scan
+    from .universe import discover
+
+    end_ms = int(time.time() * 1000)
+    start_ms = end_ms - args.days * DAY_MS
+    coins = args.universe or discover(min_open_interest=args.min_oi,
+                                      limit=args.universe_size)
+    rows = scan(coins, get_venue(args.venue_a), get_venue(args.venue_b),
+                start_ms, end_ms, hold_hours=args.basis_hold)
+    print(format_scan(rows))
+    return 0
 
 
 def run_depth_history_mode(args) -> int:
@@ -235,7 +258,12 @@ def run_portfolio_mode(args) -> int:
         spot=args.venue_a, perp=args.venue_b,
         min_open_interest=args.min_oi, limit=args.universe_size,
         coins=args.universe,
+        marks_spot=args.marks_a, marks_perp=args.marks_b,
     )
+    if args.marks_a or args.marks_b:
+        print(f"ATTENZIONE: marks da {args.marks_a or args.venue_a} / "
+              f"{args.marks_b or args.venue_b} - il basis misurato e' quello "
+              f"del proxy, non del venue negoziato")
     print(f"universo caricato: {len(universe)} coin "
           f"({args.venue_a} spot / {args.venue_b} perp)\n")
 
@@ -307,6 +335,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         from .venues import CACHE_DIR
         shutil.rmtree(CACHE_DIR, ignore_errors=True)
 
+    if args.basis:
+        return run_basis_mode(args)
     if args.depth_history:
         return run_depth_history_mode(args)
     if args.liquidity:

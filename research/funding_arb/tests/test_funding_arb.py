@@ -659,3 +659,122 @@ def test_uncovered_snapshots_are_counted_not_silently_dropped():
     thin = make_snapshot({0.2: 100.0, 1.0: 200.0, 5.0: 400.0})
     stats = depth_summarize("MIXED", [covered] * 3 + [thin], notional=1_000_000)
     assert stats.uncovered_share == pytest.approx(0.25)
+
+
+def test_exit_slippage_defaults_to_the_entry_figure():
+    symmetric = CostModel(long_taker_bps=5.0, short_taker_bps=5.0, slippage_bps=2.0)
+    assert symmetric.exit_bps == symmetric.entry_bps
+
+
+def test_a_tail_exit_costs_more_than_the_entry():
+    """You choose when to enter; the market chooses when you exit."""
+    model = CostModel(long_taker_bps=5.0, short_taker_bps=5.0,
+                      slippage_bps=1.0, exit_slippage_bps=50.0)
+    assert model.entry_bps == pytest.approx(12.0)   # 10 fees + 2 x 1 slippage
+    assert model.exit_bps == pytest.approx(110.0)   # 10 fees + 2 x 50 slippage
+    assert model.round_trip_bps == pytest.approx(122.0)
+
+    # Breakeven scales with the round trip, so a fragile exit raises the funding
+    # spread the carry must earn by the same 122/24 = 5.1x - a two-week hold that
+    # needed 6.3% APR now needs 31.8%, which excludes most of the universe.
+    symmetric = CostModel(long_taker_bps=5.0, short_taker_bps=5.0, slippage_bps=1.0)
+    ratio = (model.breakeven_spread_apr(24 * 14)
+             / symmetric.breakeven_spread_apr(24 * 14))
+    assert ratio == pytest.approx(122.0 / 24.0, rel=1e-6)
+
+
+def test_depth_history_prices_entry_and_exit_differently():
+    from research.funding_arb.costs import from_depth_history
+    from research.funding_arb.depth_history import DepthStats
+
+    fragile = DepthStats(symbol="TAOUSDT", notional=10_000.0, n_snapshots=1000,
+                         uncovered_share=0.0, median_bps=1.0, p90_bps=1.6,
+                         p99_bps=295.0, worst_bps=336.0)
+    robust = DepthStats(symbol="NEARUSDT", notional=10_000.0, n_snapshots=1000,
+                        uncovered_share=0.0, median_bps=0.9, p90_bps=1.2,
+                        p99_bps=1.6, worst_bps=17.0)
+
+    spot = FakeVenue("mexc_spot", 1.0, taker_fee_bps=5.0, funding=[], marks=[])
+    perp = FakeVenue("mexc", 8.0, taker_fee_bps=2.0, funding=[], marks=[])
+    book = from_depth_history([fragile, robust], spot, perp)
+
+    tao, near = book.for_coin("TAO"), book.for_coin("NEAR")
+    # Near-identical medians, so entry costs are near-identical...
+    assert tao.entry_bps == pytest.approx(near.entry_bps, rel=0.2)
+    # ...but the fragile book's exit is an order of magnitude worse.
+    assert tao.exit_bps > 20 * near.exit_bps
+    assert tao.round_trip_bps > near.round_trip_bps
+
+
+# ----------------------------------------------------------- hedge quality
+
+from research.funding_arb.basis import (  # noqa: E402
+    basis_series,
+    holding_move,
+    measure as basis_measure,
+)
+
+
+def marks_from(prices, start=T0):
+    return [Mark(start + i * HOUR_MS, p) for i, p in enumerate(prices)]
+
+
+def test_basis_is_measured_only_where_both_legs_report():
+    """Forward-filling a stale leg would invent a basis move that never happened."""
+    spot = [Mark(T0, 100.0), Mark(T0 + 2 * HOUR_MS, 110.0)]
+    perp = [Mark(T0, 101.0), Mark(T0 + HOUR_MS, 105.0), Mark(T0 + 2 * HOUR_MS, 111.0)]
+    series = basis_series(spot, perp)
+    assert [t for t, _ in series] == [T0, T0 + 2 * HOUR_MS]
+    assert series[0][1] == pytest.approx(0.01)
+
+
+def test_a_perfectly_tracking_perp_shows_no_basis_move():
+    prices = [100.0 * (1 + 0.01 * i) for i in range(600)]
+    spot, perp = marks_from(prices), marks_from(prices)
+    stats = basis_measure("TIGHT", spot, perp, hold_hours=48)
+    assert stats is not None
+    assert stats.p99_move == pytest.approx(0.0, abs=1e-12)
+    assert stats.hedge_is_reliable
+
+
+def test_a_drifting_perp_is_flagged_as_an_unreliable_hedge():
+    # 900 hours, so a 480h hold still leaves enough windows to measure.
+    spot = marks_from([100.0] * 900)
+    # The perp drifts steadily to 5% above spot: a static hedge bleeds that.
+    perp = marks_from([100.0 * (1 + 0.05 * i / 900) for i in range(900)])
+    stats = basis_measure("DRIFT", spot, perp, hold_hours=480)
+    assert stats is not None
+    assert stats.p99_move > 0.01
+    assert not stats.hedge_is_reliable
+
+
+def test_holding_move_measures_the_change_not_the_level():
+    """A large but CONSTANT basis costs nothing: you enter and leave at the same one."""
+    spot = marks_from([100.0] * 600)
+    perp = marks_from([103.0] * 600)  # a permanent 3% premium
+    stats = basis_measure("CONSTANT", spot, perp, hold_hours=48)
+    assert stats.median_level == pytest.approx(0.03)
+    assert stats.p99_move == pytest.approx(0.0, abs=1e-12)
+    assert stats.hedge_is_reliable
+
+
+def test_holding_move_respects_the_holding_period():
+    spot = marks_from([100.0] * 600)
+    perp = marks_from([100.0 * (1 + 0.05 * i / 600) for i in range(600)])
+    short_hold = holding_move(basis_series(spot, perp), 24)
+    long_hold = holding_move(basis_series(spot, perp), 240)
+    assert max(long_hold) > max(short_hold)
+
+
+def test_carry_months_lost_prices_the_tail_against_the_carry():
+    spot = marks_from([100.0] * 900)
+    perp = marks_from([100.0 * (1 + 0.10 * i / 900) for i in range(900)])
+    stats = basis_measure("DRIFT", spot, perp, hold_hours=480)
+    # A p99 move worth half a year's carry means the hedge, not the funding,
+    # decides the trade.
+    assert stats.carry_months_lost(carry_apr=0.20) > 1.0
+
+
+def test_too_little_overlap_returns_nothing_rather_than_a_guess():
+    spot, perp = marks_from([100.0] * 50), marks_from([101.0] * 50)
+    assert basis_measure("SHORT", spot, perp, hold_hours=48) is None
