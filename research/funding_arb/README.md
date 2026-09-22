@@ -36,9 +36,15 @@ testnet — venga puntato addosso.
    statisticamente. Sotto c'è la metrica da usare al suo posto.
 
 **Il numero da portarsi via:** l'edge è reale, strutturale e non direzionale, ma
-vale **1-3% APR sul capitale**, e la sua viabilità dipende interamente da un
-parametro che i dati storici non possono darmi — lo slippage reale di esecuzione
-sulle alt. Va misurato su testnet prima di qualsiasi altra cosa.
+vale **1-3% APR sul capitale** — e due progetti indipendenti che hanno fatto lo
+stesso esercizio con più dati arrivano allo stesso posto (§10): uno conclude che
+il carry è l'unica di sette strategie a sopravvivere all'aritmetica dei costi, e
+che perde comunque contro un titolo di stato.
+
+Il campione qui (marzo 2025 – settembre 2026) cade interamente dentro il periodo
+in cui il backtest di riferimento su sei anni **non apre nessuna posizione**,
+perché il funding è sceso sotto la sua soglia. Non è una strategia diversa: è la
+stessa strategia misurata nel regime magro.
 
 ---
 
@@ -715,7 +721,141 @@ cortesia, ma per correttezza.
 
 ---
 
-## 10. Rischi
+## 10. Lavoro correlato, e cosa dice dei numeri qui sopra
+
+Questa famiglia di strategie è battuta. Su GitHub ci sono decine di progetti di
+funding arbitrage, ma quasi tutti sono **scanner o esecutori live** — trovano lo
+spread e piazzano gli ordini. I framework di ricerca con un modello di costo
+onesto sono pochissimi, ed è lì che il confronto diventa utile.
+
+### Due progetti indipendenti arrivano alla stessa conclusione
+
+**[aaronpascalkujur/trading-strategy-research]** ha testato sette strategie
+contro l'aritmetica dei costi: MA crossover, mean reversion su tre orizzonti,
+pair trade ETH/BTC, e il carry sul funding. **Il carry è l'unico sopravvissuto** —
+esattamente lo stesso esito del §5 qui. Ma il suo verdetto finale è più duro del
+mio: 11.57%/anno sul notional, che diventa **4.39% dopo tasse e vincoli di
+capitale**, contro un titolo di stato indiano al **5.63% senza rischio di
+liquidazione**. Il titolo del repo lo dice meglio di qualsiasi riassunto: *"five
+disproved, one that works and still lost to a government bond"*.
+
+**[zwmjj/funding-rate-arb]** ha backtestato il carry long spot / short perp su
+BTC ed ETH su Binance, da gennaio 2020 ad aprile 2026 — sei anni:
+
+| | BTC | ETH |
+|---|---|---|
+| rendimento annuo lordo | 9.0% | 11.4% |
+| trade | 18 | 14 |
+| win rate | **100%** | **100%** |
+| hold medio | 38g | 58g |
+| max drawdown | −0.28% | −1.80% |
+
+E, come al §2 qui, **trattano il win rate del 100% come un avvertimento, non come
+una validazione**: *"la strategia non è stata testata — sta descrivendo un periodo
+in cui il funding perpetuo è stato persistentemente positivo"*.
+
+### Perché io misuro l'1% e loro il 9-12%
+
+Non è una discrepanza: sono tre differenze tutte spiegabili, e la terza è la più
+importante.
+
+1. **Notional contro capitale.** Loro quotano sul notional. A leva 1× il carry
+   immobilizza 2× notional (spot intero + margine perp), quindi 11.57% sul
+   notional è ~5.8% sul capitale prima dei costi. Circa metà del divario sparisce
+   qui.
+
+2. **Basis e liquidazioni.** Nessuno dei due li modella. zwmjj lo dichiara:
+   *"spot e perp sono trattati come coperture 1:1 all'ingresso; lo slippage
+   effettivo è ignorato"*. Nel mio run a 540 giorni il basis costa −$70 e ci sono
+   3 liquidazioni.
+
+3. **Il regime.** Questa è la parte che conta. zwmjj riporta che **il 79% del PnL
+   su BTC e l'82% su ETH viene da trade aperti prima del 2022**, e che nel 2025 il
+   funding è sceso a 4.3%/anno — sotto la loro soglia d'ingresso — quindi hanno
+   aperto **zero trade nel 2025 e nel 2026**.
+
+   Il mio campione MEXC va da marzo 2025 a settembre 2026. **È interamente dentro
+   il periodo in cui il loro backtest non apre posizioni.** Non sto misurando una
+   strategia diversa: sto misurando la stessa strategia nel regime che gli altri
+   backtest evitano semplicemente restando fuori.
+
+   Il che rende coerente anche il §6: su 3 anni il top quintile ha reso +26.7%
+   APR contro +12.1% negli ultimi 180 giorni. Il funding *era* più ricco prima.
+
+### La versione trasversale esiste — nella forma che avevo scartato
+
+**[nsheng1568/funding-dispersion-trade]** fa la selezione trasversale su ~30 coin
+di Hyperliquid, ma nella variante **long-short direzionale**: lungo la coin col
+funding più basso, corto quella col più alto, neutralizzando il beta via PCA su
+BTC/ETH/SOL. È precisamente il trade che avevo descritto e scartato — cattura
+l'intero spread Q1−Q5 (~19-30% APR nei miei dati) invece del solo livello, ma
+introduce rischio di prezzo relativo fra panieri.
+
+Il suo risultato: **~7% APR netto costi a ~25% di volatilità**, che l'autore stesso
+definisce *"un rendimento corretto per il rischio altamente inappetibile"* —
+Sharpe ~0.28. Il rischio di prezzo relativo si è mangiato il vantaggio, come
+temevo.
+
+Nota di convergenza indipendente: usa EWMA con half-life di **168h e 72h**. Io ero
+arrivato a un lookback di 168h per il ranking. Stessa scala temporale, trovata
+separatamente.
+
+### Cosa nessuno di questi modella
+
+| | scanner live | zwmjj | aaronpascal | nsheng | questo repo |
+|---|---|---|---|---|---|
+| costo di transazione quantificato | ~ | ✅ 16bp | ✅ | ✅ | ✅ misurato dai book |
+| coda dello slippage (p99) | ✗ | ✗ | ✗ | ✗ | ✅ archivi dal 2023 |
+| deriva del basis | ✗ | ✗ dichiarato | ✗ | ✗ | ✅ misurata |
+| liquidazione a margine isolato | ~ | ✗ | ✗ | ✗ | ✅ per gamba |
+| persistenza del rango di funding | ✗ | ✗ | ✗ | premessa non testata | ✅ ρ su 3 anni |
+| walk-forward | ✗ | ✗ (sensitivity) | ✅ | ✗ | ✗ **manca** |
+| ribilanciamento della copertura | alcuni | ✗ | ✗ | ✗ | ✗ **manca** |
+
+Le due caselle vuote nell'ultima colonna sono esattamente i due punti aperti del
+§12. E su una delle due la letteratura ha già una risposta utile.
+
+### Sul ribilanciamento, la letteratura è scoraggiante
+
+La ricerca sull'hedging dinamico dice che il **ribilanciamento a soglia batte
+quello periodico** — si ottiene quasi tutto il beneficio con molti meno trade — e
+che una soglia di deriva del ~15% fa scattare un aggiustamento circa una volta a
+trimestre.
+
+Ma l'aritmetica è brutale, e vale la pena riportarla per intero: *una posizione da
+100.000 $ ribilanciata tre volte a settimana a 4bp di round trip costa ~600 $ al
+mese; se il funding lordo vale 900 $ al mese, ne restano 300 prima di qualsiasi
+movimento di basis o inversione del funding.*
+
+Quindi il ribilanciamento non è un miglioramento gratuito: è uno scambio fra
+deriva della copertura e commissioni, e a soglie strette il rimedio costa più
+della malattia. Quando lo implementerò, il parametro da ottimizzare non è la
+frequenza ma **la soglia di deriva**.
+
+### Letteratura accademica
+
+- La persistenza che misuro al §6 è corroborata: un'analisi ad alta frequenza su
+  26 exchange (11 CEX, 15 DEX) trova che gli spread di funding mostrano
+  *"persistenza estremamente elevata"*.
+- Uno studio SSRN, *["Failure of Cross-Sectional Alpha Screening on Cryptocurrency
+  Perpetual Futures"]*, trova che i segnali di funding **non** contengono alpha
+  trasversale sfruttabile su 10 perp Binance a orizzonte 8h: Rank IC fra −0.0097 e
+  +0.0243, Sharpe netto −2.9/−3.2, drawdown −95.6%.
+
+  **Attenzione a non leggerlo come una smentita di questo lavoro.** Loro misurano
+  l'IC di *funding → rendimento di prezzo* su portafogli long-short direzionali.
+  Io misuro *funding → funding* su posizioni delta-neutral per coin. Sono due
+  grandezze diverse, e il loro fallimento riguarda proprio la variante
+  direzionale che ho scartato — la stessa che nsheng1568 porta a Sharpe 0.28.
+
+[aaronpascalkujur/trading-strategy-research]: https://github.com/aaronpascalkujur/trading-strategy-research
+[zwmjj/funding-rate-arb]: https://github.com/zwmjj/funding-rate-arb
+[nsheng1568/funding-dispersion-trade]: https://github.com/nsheng1568/funding-dispersion-trade
+["Failure of Cross-Sectional Alpha Screening on Cryptocurrency Perpetual Futures"]: https://papers.ssrn.com/sol3/papers.cfm?abstract_id=6701738
+
+---
+
+## 11. Rischi
 
 ### Modellati dal backtest
 
@@ -756,7 +896,7 @@ minuti chiamando un modello non è un risk manager.
 
 ---
 
-## 11. Uso
+## 12. Uso
 
 ```bash
 # 1. Il test di falsificazione: la classifica del funding persiste?
@@ -800,7 +940,7 @@ Le risposte HTTP sono cachate in `.cache/` (gitignorata). `--no-cache` la svuota
 
 ---
 
-## 12. Runbook operativo
+## 13. Runbook operativo
 
 ### Quello che NON serve
 
@@ -904,7 +1044,8 @@ research/funding_arb/
 
 ## Ordine di lettura consigliato
 
-§3 (l'aritmetica del breakeven) e §6 (la selezione trasversale) sono le due
-sezioni che contano. Il resto documenta come ci sono arrivato, comprese due
-strade che non portano da nessuna parte — lo spread cross-venue e il timing
-temporale — che vale la pena conoscere per non ripercorrerle.
+§3 (l'aritmetica del breakeven), §6 (la selezione trasversale) e §10 (il
+confronto con chi ha fatto lo stesso lavoro) sono le tre sezioni che contano. Il
+resto documenta come ci sono arrivato, comprese due strade che non portano da
+nessuna parte — lo spread cross-venue e il timing temporale — che vale la pena
+conoscere per non ripercorrerle.
