@@ -191,6 +191,19 @@ attraversato per lato. **Da verificare sui fill reali.**
 | Nasdaq Data Link | ❌ | 403 |
 | TAAPI | ⚠️ | ha `/candles`, **non ha endpoint funding** (verificato: "does not exist") |
 
+### 9-bis. Curve futures — cosa è raggiungibile
+
+| fonte | stato | copertura |
+|---|---|---|
+| **EIA** `eia.gov/dnav/{pet,ng}/hist_xls/` | ✅ | Contratti 1-4: **WTI 1983-2024** (10.183 oss), **gas 1994-2024** (7.496), heating oil (9.894), benzina (4.609). Fino al **2024-04-05**; l'API v2 richiede una chiave gratuita per i dati correnti |
+| CME settlements | ❌ | Blocca esplicitamente lo scraping e lo vieta nei termini d'uso. **Non aggirare** |
+| Barchart, investing.com | ❌ | 403 |
+| IBKR/TWS | 🔑 | La fonte pulita per un universo ampio: richiede l'account dell'utente |
+
+Con l'EIA si fa il test di decomposizione su 4 commodity energetiche subito e
+gratis. Per il test **trasversale** servono 12-20 commodity di settori diversi, e
+lì serve IBKR.
+
 **Conseguenza per la fase futures: lo storico delle curve non è ottenibile
 gratuitamente da un container cloud.** La fonte pulita è l'account IBKR.
 
@@ -284,6 +297,45 @@ che meriti un test.
 **SeasonAlgo**: SaaS, 30 anni di storico, nessuna API o export documentati.
 Descrive sé stesso come "backtesting e ottimizzazione di qualsiasi strategia
 stagionale su tutto lo storico", che è precisamente la ricerca quantificata sopra.
+**Non serve**: la stagionalità si calcola meglio in proprio (leave-one-out), e
+quello che pubblica sono statistiche derivate, non curve grezze.
+
+### Misurato: la stagionalità NASCONDE il carry, non lo fornisce
+
+Dati EIA (curve energia, contratti 1-4, gratuiti e ufficiali — vedi §9-bis).
+Autocorrelazione di rango del carry mensile, grezzo contro destagionalizzato
+leave-one-out:
+
+| commodity | R² stagionale | 3m grezzo | 3m residuo | 6m grezzo | 6m residuo | 12m grezzo | 12m residuo |
+|---|---|---|---|---|---|---|---|
+| WTI | −4.3% | 0.617 | 0.605 | 0.442 | 0.442 | 0.157 | 0.157 |
+| **NATGAS** | 35.7% | **−0.102** | **+0.338** | 0.305 | 0.156 | 0.502 | **0.086** |
+| HEATOIL | 9.4% | 0.578 | 0.603 | 0.240 | 0.326 | 0.349 | 0.233 |
+| **GASOLINE** | **71.7%** | 0.094 | **0.306** | −0.564 | −0.024 | 0.699 | **0.257** |
+
+Due letture opposte a seconda dell'orizzonte:
+
+- **A 12 mesi la persistenza apparente È stagionalità.** NATGAS crolla da 0.502 a
+  0.086, GASOLINE da 0.699 a 0.257. Dodici mesi di distanza è lo stesso mese di
+  calendario: stai "prevedendo" che novembre somigli ai novembre passati.
+- **A 1-3 mesi — l'orizzonte tradabile — la persistenza NON è stagionale, e
+  destagionalizzare la rafforza.** NATGAS passa da **−0.102 a +0.338** a 3 mesi,
+  GASOLINE da 0.094 a 0.306. Il ciclo stagionale cambia segno in quell'arco e
+  *maschera* il segnale sottostante.
+
+**Conclusione controintuitiva:** la stagionalità non è l'edge, è il rumore che
+nasconde l'edge. Non si trada — si sottrae per vedere il carry sotto. È l'inverso
+esatto di quello che fa uno scanner stagionale.
+
+⚠️ Cautele: sono autocorrelazioni *temporali* su 4 commodity, non l'IC
+*trasversale* misurato sul cripto (0.65) — grandezze diverse, non confrontabili
+direttamente. Il lag a 1 mese (~0.86) è in parte meccanico su una serie lenta
+mediata mensilmente: le colonne informative sono 3m e 6m. Dati fermi al 2024-04.
+
+Implementato in `seasonality.py` con 9 test. Bug trovato dai test:
+`seasonality_explains` = `1 − res/raw` è mal definito con `raw` negativo (dava
++2.53 dove la verità era l'opposto); ora restituisce `None` e c'è `masks_signal`
+per quel caso.
 
 ---
 

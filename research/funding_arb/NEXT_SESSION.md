@@ -162,6 +162,13 @@ per l'indagine completa. In sintesi, per questa sessione:
     esattamente l'analogo del funding. Si prosegue.
 
   Una misura, due domande. Falla nel passo 3, non in un passo separato.
+  **`seasonality.py` la implementa già** (`decompose`, `deseasonalize`,
+  `carry_apr`): passagli una serie mensile per commodity e leggi le colonne.
+- **Già misurato su 4 commodity energetiche con dati EIA gratuiti** (`MEMORY.md`
+  §11-bis): a 12 mesi la persistenza è quasi tutta stagionale, ma **a 1-3 mesi
+  destagionalizzare la rafforza** — su NATGAS da −0.102 a +0.338. La stagionalità
+  nasconde il carry invece di fornirlo. Serve replicarlo su un universo più ampio,
+  ed è questo che i dati IBKR devono permettere.
 - **Se qualcosa merita un test dedicato dopo**, è il vincolo di full carry (vedi
   `MEMORY.md` §11-bis): in contango lo spread è limitato dal costo di stoccaggio,
   in backwardation no. È un'asimmetria fisica, non statistica.

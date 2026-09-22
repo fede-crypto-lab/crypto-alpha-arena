@@ -1142,7 +1142,8 @@ research/funding_arb/
 ├── portfolio.py   # book trasversale: classifica l'universo, tiene i primi N
 ├── liquidity.py   # costo di esecuzione reale, percorrendo i book live
 ├── depth_history.py # distribuzione storica del costo, dagli archivi Binance
-├── basis.py       # qualita' della copertura: deriva perp-spot sull'holding
+├── basis.py       # qualita della copertura: deriva perp-spot sullholding
+├── seasonality.py # decomposizione carry vs stagionalita (leave-one-out)
 ├── metrics.py     # expectancy, Wilson CI, Sharpe, drawdown, attribuzione PnL
 ├── run.py         # CLI (6 modalità: single-pair, --persistence, --portfolio,
 │                  #      --liquidity, --depth-history, --basis)

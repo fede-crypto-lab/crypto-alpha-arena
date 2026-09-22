@@ -9,6 +9,7 @@ exist, which is strictly worse than an exception.
 from __future__ import annotations
 
 import math
+import statistics
 
 import pytest
 
@@ -833,3 +834,118 @@ def test_the_gate_is_validated():
         PortfolioParams(exclude_vol_quantile=1.0)
     with pytest.raises(ValueError):
         PortfolioParams(exclude_vol_quantile=-0.1)
+
+
+# ------------------------------------------------------- seasonality decomposition
+
+from research.funding_arb.seasonality import (  # noqa: E402
+    carry_apr,
+    decompose,
+    deseasonalize,
+    lagged_rho,
+    seasonal_mean,
+    to_monthly,
+)
+
+
+def monthly(values_by_year_month):
+    return dict(values_by_year_month)
+
+
+def test_seasonal_mean_excludes_the_year_being_estimated():
+    """Including it would let each observation help predict itself."""
+    series = {(y, 1): float(y) for y in range(2000, 2010)}
+    # The mean of every OTHER year's January, never 2005's own value.
+    expected = statistics.fmean([y for y in range(2000, 2010) if y != 2005])
+    assert seasonal_mean(series, 2005, 1) == pytest.approx(expected)
+
+
+def test_seasonal_mean_refuses_a_thin_month():
+    series = {(y, 3): 1.0 for y in range(2000, 2003)}   # only 3 years
+    assert seasonal_mean(series, 2001, 3) is None
+
+
+def test_a_purely_seasonal_series_deseasonalises_to_nothing():
+    """Same shape every year: the residual is zero and R2 is 1."""
+    shape = {m: float(m) for m in range(1, 13)}
+    series = {(y, m): shape[m] for y in range(2000, 2020) for m in range(1, 13)}
+    residual = deseasonalize(series)
+    assert all(abs(v) < 1e-9 for v in residual.values())
+    result = decompose("PURE", series)
+    assert result.seasonal_r2 == pytest.approx(1.0)
+
+
+def test_a_series_with_no_calendar_structure_keeps_its_variance():
+    import random
+    rng = random.Random(11)
+    series = {(y, m): rng.gauss(0, 1)
+              for y in range(2000, 2020) for m in range(1, 13)}
+    result = decompose("NOISE", series)
+    # Subtracting a noisy month mean cannot explain much, and may add variance.
+    assert result.seasonal_r2 < 0.25
+
+
+def test_seasonality_can_hide_persistence_rather_than_supply_it():
+    """The natural-gas case: a sign-flipping cycle masks a trending signal.
+
+    Raw 6-month autocorrelation is dragged negative by the seasonal cycle, while
+    the underlying level persists. Deseasonalising must recover it.
+    """
+    import math
+    series = {}
+    for i, (y, m) in enumerate((y, m) for y in range(2000, 2020)
+                               for m in range(1, 13)):
+        seasonal = 10.0 * math.sin(2 * math.pi * (m - 1) / 12)   # flips over 6m
+        trend = i * 0.05                                          # persistent
+        series[(y, m)] = seasonal + trend
+
+    result = decompose("MASKED", series, lags=(3, 6))
+
+    # At six months the cycle has flipped sign, dragging raw rho negative while
+    # the underlying trend persists. Deseasonalising recovers it.
+    assert result.raw_rho[6] < 0 < result.residual_rho[6]
+    assert result.masks_signal(6) is True
+
+    # The share-of-persistence ratio is undefined against a negative raw value
+    # and must say so rather than return a misleading positive number.
+    assert result.seasonality_explains(6) is None
+
+    # At three months raw rho is still positive, so the share is defined - and
+    # negative, which is the signature of seasonality hiding signal.
+    assert result.raw_rho[3] > 0
+    assert result.seasonality_explains(3) < 0
+    assert result.masks_signal(3) is True
+
+
+def test_seasonality_explains_reports_a_share_when_it_does_supply_it():
+    shape = {m: float(m) for m in range(1, 13)}
+    import random
+    rng = random.Random(3)
+    series = {(y, m): shape[m] + rng.gauss(0, 0.2)
+              for y in range(2000, 2020) for m in range(1, 13)}
+    result = decompose("SEASONAL", series, lags=(12,))
+    # Twelve months apart is the same calendar month, so raw rho is high and
+    # almost all of it is the calendar.
+    assert result.raw_rho[12] > 0.8
+    assert result.seasonality_explains(12) > 0.8
+
+
+def test_lagged_rho_needs_enough_pairs():
+    series = {(2000, m): float(m) for m in range(1, 13)}
+    assert lagged_rho(series, 1) != lagged_rho(series, 1) or True  # NaN-safe
+    import math
+    assert math.isnan(lagged_rho(series, 1))
+
+
+def test_carry_is_positive_in_backwardation():
+    """Near above far means you are paid to be long - a positive funding rate."""
+    assert carry_apr(near=105.0, far=100.0) == pytest.approx(0.60, rel=1e-6)
+    assert carry_apr(near=100.0, far=105.0) < 0
+    assert carry_apr(near=102.0, far=100.0, months_apart=2.0) == pytest.approx(0.12)
+    with pytest.raises(ValueError):
+        carry_apr(near=100.0, far=0.0)
+
+
+def test_to_monthly_averages_within_the_month():
+    daily = {(2024, 1, 1): 1.0, (2024, 1, 2): 3.0, (2024, 2, 1): 10.0}
+    assert to_monthly(daily) == {(2024, 1): 2.0, (2024, 2): 10.0}
