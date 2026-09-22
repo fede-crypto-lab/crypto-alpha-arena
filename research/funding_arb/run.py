@@ -65,6 +65,9 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--entry-rank", type=int, default=5)
     g.add_argument("--exit-rank", type=int, default=12)
     g.add_argument("--rank-lookback", type=int, default=168, help="hours")
+    g.add_argument("--exclude-vol", type=float, default=0.0,
+                   help="drop this fraction of the universe by trailing volatility "
+                        "at entry (risk gate, not a timing signal)")
     g.add_argument("--decision-every", type=int, default=8, help="hours")
     g.add_argument("--universe-size", type=int, default=24)
     g.add_argument("--min-oi", type=float, default=5e6, help="USD open interest floor")
@@ -309,6 +312,7 @@ def run_portfolio_mode(args) -> int:
         min_hold_hours=args.min_hold,
         max_hold_hours=args.max_hold if args.max_hold is not None else 24 * 90,
         decision_every_hours=args.decision_every,
+        exclude_vol_quantile=args.exclude_vol,
     )
     config = BacktestConfig(
         notional=args.notional,

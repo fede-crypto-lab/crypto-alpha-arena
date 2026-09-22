@@ -59,8 +59,28 @@ class PortfolioParams:
     #: backtest and ruinous live.
     decision_every_hours: int = 8
     warmup_hours: int = 168
+    #: Fraction of the universe, by trailing realised volatility, to refuse at
+    #: entry. 0.0 keeps everything; 0.2 drops the most volatile fifth.
+    #:
+    #: This is a RISK gate, not a timing signal, and the distinction is the whole
+    #: point. Price indicators do not forecast funding - over 540 days, MACD
+    #: scores a rank IC of 0.025 against next week's funding, momentum -0.051 and
+    #: price-vs-SMA200 -0.067, while the trailing funding rate itself scores
+    #: 0.498. There is nothing for a trend filter to add to the signal.
+    #:
+    #: Volatility is different, because it predicts the failure modes rather than
+    #: the return. Split the universe into volatility quintiles and the chance of
+    #: an adverse run past +99.5% over a 20-day hold - which liquidates the short
+    #: leg at 1x - runs 0.00%, 0.34%, 0.68%, 3.04%, 5.76% from calmest to most
+    #: volatile. The gate is cross-sectional rather than an absolute threshold so
+    #: it keeps meaning when the whole market's volatility shifts.
+    exclude_vol_quantile: float = 0.0
+    #: Trailing window for that volatility, in hours.
+    vol_lookback_hours: int = 168
 
     def __post_init__(self) -> None:
+        if not 0.0 <= self.exclude_vol_quantile < 1.0:
+            raise ValueError("exclude_vol_quantile must be in [0, 1)")
         if self.exit_rank < self.entry_rank:
             raise ValueError("exit_rank must be >= entry_rank (hysteresis)")
         if self.max_positions < 1:
@@ -244,15 +264,35 @@ def run_portfolio(
 
 
 def _rank(universe, bounds, t, params) -> List[Tuple[str, float]]:
-    """Coins ordered by trailing realised funding, richest first."""
+    """Coins ordered by trailing realised funding, richest first.
+
+    The volatility gate is applied here rather than at exit: a position already
+    open is left alone, because closing it costs a full round trip and the move
+    the gate is worried about may already have happened.
+    """
     scored = []
+    vols = {}
     for coin, pair in universe.items():
         lo, hi = bounds[coin]
         if not lo <= t <= hi:
             continue
         apr = trailing_apr(pair, t, params.rank_lookback_hours)
-        if apr is not None:
-            scored.append((coin, apr))
+        if apr is None:
+            continue
+        scored.append((coin, apr))
+        if params.exclude_vol_quantile > 0:
+            vol = pair.b.realized_volatility(t, params.vol_lookback_hours)
+            if vol is not None:
+                vols[coin] = vol
+
+    if params.exclude_vol_quantile > 0 and len(vols) >= 5:
+        ordered = sorted(vols, key=lambda c: vols[c])
+        keep = max(1, int(round(len(ordered) * (1 - params.exclude_vol_quantile))))
+        allowed = set(ordered[:keep])
+        # A coin with no volatility reading is dropped rather than waved through:
+        # an unmeasurable risk is not the same as an absent one.
+        scored = [(c, apr) for c, apr in scored if c in allowed]
+
     scored.sort(key=lambda kv: -kv[1])
     return scored
 

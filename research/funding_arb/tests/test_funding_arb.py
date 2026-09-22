@@ -778,3 +778,58 @@ def test_carry_months_lost_prices_the_tail_against_the_carry():
 def test_too_little_overlap_returns_nothing_rather_than_a_guess():
     spot, perp = marks_from([100.0] * 50), marks_from([101.0] * 50)
     assert basis_measure("SHORT", spot, perp, hold_hours=48) is None
+
+
+# ------------------------------------------------------- volatility risk gate
+
+def test_realized_volatility_is_backward_looking():
+    calm = [100.0] * 200
+    pair = build_carry("X", 0.0004, hours=900, price=100.0)
+    pair.b.marks = [Mark(T0 + i * HOUR_MS, p) for i, p in enumerate(calm)] + [
+        Mark(T0 + (200 + i) * HOUR_MS, 100.0 * (1 + 0.05 * (-1) ** i))
+        for i in range(200)
+    ]
+    # Before the turbulent stretch begins, it must not be visible.
+    assert pair.b.realized_volatility(T0 + 180 * HOUR_MS, 168) == pytest.approx(0.0)
+    assert pair.b.realized_volatility(T0 + 380 * HOUR_MS, 168) > 0.01
+
+
+def test_realized_volatility_needs_enough_history():
+    pair = build_carry("X", 0.0004, hours=900)
+    assert pair.b.realized_volatility(pair.grid[0], 168) is None
+
+
+def test_the_gate_refuses_the_most_volatile_coins():
+    """Same funding everywhere, so only volatility can decide who gets traded."""
+    import math as _math
+
+    universe = {}
+    for i, name in enumerate(("CALM1", "CALM2", "CALM3", "WILD1", "WILD2")):
+        pair = build_carry(name, 0.0009, hours=900)
+        amplitude = 0.001 if name.startswith("CALM") else 0.20
+        path = [100.0 * (1 + amplitude * _math.sin(h / 3.0)) for h in range(900)]
+        pair.a.marks = [Mark(T0 + h * HOUR_MS, p) for h, p in enumerate(path)]
+        pair.b.marks = [Mark(T0 + h * HOUR_MS, p) for h, p in enumerate(path)]
+        universe[name] = pair
+
+    def run(gate):
+        return run_portfolio(
+            universe,
+            CostModel(long_taker_bps=10.0, short_taker_bps=5.0, slippage_bps=0.0),
+            PortfolioParams(max_positions=5, entry_rank=5, exit_rank=5,
+                            min_entry_apr=0.10, min_hold_hours=48,
+                            max_hold_hours=10_000, warmup_hours=200,
+                            exclude_vol_quantile=gate),
+            _Cfg(notional=10_000.0, leverage=1.0, leverage_a=1.0),
+        )
+
+    assert any(c.startswith("WILD") for c in run(0.0).coins_traded)
+    gated = run(0.4).coins_traded
+    assert gated and not any(c.startswith("WILD") for c in gated)
+
+
+def test_the_gate_is_validated():
+    with pytest.raises(ValueError):
+        PortfolioParams(exclude_vol_quantile=1.0)
+    with pytest.raises(ValueError):
+        PortfolioParams(exclude_vol_quantile=-0.1)

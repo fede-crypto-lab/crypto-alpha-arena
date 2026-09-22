@@ -855,7 +855,107 @@ frequenza ma **la soglia di deriva**.
 
 ---
 
-## 11. Rischi
+## 11. Indicatori tecnici: no come segnale, sì come cancello di rischio
+
+Domanda naturale: perché non combinare il carry con MACD, SuperTrend o simili, per
+tenere la posizione solo nei periodi favorevoli? C'è un meccanismo plausibile
+dietro — il funding è positivo quando i long a leva si accalcano, e questo
+correla col trend di prezzo, quindi un indicatore *potrebbe* anticipare il
+regime.
+
+Non è un'opinione da dare: è misurabile. 21 coin, 540 giorni, 75 periodi
+settimanali non sovrapposti, IC di rango trasversale contro il funding
+effettivamente realizzato nei 7 giorni successivi.
+
+| predittore del funding futuro | IC medio | IC min | IC max | periodi con IC > 0 |
+|---|---|---|---|---|
+| **il funding stesso (trailing 168h)** | **0.498** | −0.12 | 0.85 | **99%** |
+| MACD histogram | 0.025 | −0.45 | 0.59 | 55% |
+| volatilità realizzata 168h | 0.046 | −0.37 | 0.40 | 57% |
+| momentum 168h | **−0.051** | −0.45 | 0.48 | 40% |
+| prezzo vs SMA200 | **−0.067** | −0.62 | 0.43 | 31% |
+
+**Nessun indicatore di prezzo prevede il funding.** MACD è una monetina;
+momentum e SMA200 sono leggermente *negativi*, cioè girati nel verso sbagliato.
+Il funding prevede sé stesso venti volte meglio di qualsiasi proxy.
+
+Il motivo è quasi tautologico una volta detto: un indicatore di prezzo sarebbe un
+*sostituto rumoroso* di una cosa che qui si osserva direttamente. Il funding non
+va stimato — l'exchange lo pubblica. Aggiungere un proxy a un osservabile può solo
+peggiorare.
+
+E il §5 aveva già dato l'avvertimento: la versione "intelligente" con timing EWMA
+aveva selettività 0.83 e rendeva un nono di quella passiva. Su questa strategia
+qualunque strato di timing ha finora peggiorato le cose.
+
+### Ma la domanda giusta non era quella
+
+Gli indicatori non prevedono il *rendimento*. Prevedono però molto bene i due
+**modi di fallire** da cui sono venute tutte le perdite del §9:
+
+| predittore | IC vs rialzo avverso (liquida la gamba short) | IC vs movimento del basis |
+|---|---|---|
+| **volatilità realizzata 168h** | **0.356** | **0.363** |
+| range 168h (stile SuperTrend) | 0.305 | 0.293 |
+| momentum 168h | 0.018 | −0.049 |
+
+Un ordine di grandezza più della loro capacità di prevedere il funding. E i
+quintili di volatilità, su 1.514 osservazioni, dicono la cosa in modo brutale —
+rialzo massimo su un hold di 20 giorni:
+
+| quintile di volatilità | mediana | p90 | p99 | **oltre +99.5% = liquidazione a 1×** |
+|---|---|---|---|---|
+| Q1 (più calmo) | 7.5% | 24.5% | 63.4% | **0.00%** |
+| Q2 | 10.0% | 41.9% | 84.3% | 0.34% |
+| Q3 | 11.6% | 37.6% | 94.5% | 0.68% |
+| Q4 | 15.1% | 58.0% | 166.0% | 3.04% |
+| Q5 (più agitato) | 18.5% | 71.8% | 157.2% | **5.76%** |
+
+Da **zero a 5.76%** di probabilità di liquidazione. Questa non è una relazione
+marginale da sfruttare con cura: è una separazione netta, su un campione grande.
+
+### Il filtro implementato, e i suoi limiti
+
+`PortfolioParams.exclude_vol_quantile` scarta all'ingresso una frazione
+dell'universo per volatilità trailing. Il gate è **trasversale** e non a soglia
+assoluta, così mantiene senso quando la volatilità di tutto il mercato cambia. Si
+applica solo all'ingresso: una posizione già aperta si lascia stare, perché
+chiuderla costa un round trip intero e il movimento temuto è probabilmente già
+avvenuto.
+
+540 giorni, 21 coin, stesso motore:
+
+| gate | rotazioni | utilizzo | basis | netto | APR | **liquidazioni** | win rate [CI low] |
+|---|---|---|---|---|---|---|---|
+| 0% | 10 | 22% | +$388 | +$327 | 0.22% | **4** | 60% [31%] |
+| 10% | 10 | 12% | +$402 | +$777 | **0.53%** | 1 | 80% [49%] |
+| 20% | 8 | 7% | +$287 | +$685 | 0.46% | 1 | 88% [53%] |
+| 30% | 6 | 5% | +$248 | +$612 | 0.41% | **0** | 100% [61%] |
+| 40% | 5 | 4% | −$72 | +$138 | 0.09% | 1 | 80% [38%] |
+
+**Cosa credere e cosa no.** Le liquidazioni che scendono da 4 a 0 sono coerenti
+con la tabella dei quintili, che poggia su 1.514 osservazioni: quello è il
+risultato solido, ed è il motivo per cui il gate resta nel codice.
+
+Il miglioramento di APR **non** va creduto come stima di rendimento. Sono 5-10
+rotazioni, gli intervalli di Wilson si sovrappongono tutti, e la soglia è scelta
+sullo stesso campione su cui è misurata — esattamente l'overfitting contro cui
+mette in guardia il §2. Che il massimo cada al 10% e non al 30% è rumore.
+
+E il prezzo del gate è visibile: **l'utilizzo crolla dal 22% al 5%**. Su un book
+il cui problema principale era già il capitale inattivo, un filtro che dimezza le
+posizioni aperte toglie da una parte quello che dà dall'altra. Il gate riduce il
+rischio di coda; non fa guadagnare di più.
+
+### In una riga
+
+Gli indicatori tecnici non hanno niente da dire su *quanto* incasserai — quello
+te lo dice il funding. Hanno molto da dire su *quando la copertura si romperà*, ed
+è lì che vanno messi.
+
+---
+
+## 12. Rischi
 
 ### Modellati dal backtest
 
@@ -896,7 +996,7 @@ minuti chiamando un modello non è un risk manager.
 
 ---
 
-## 12. Uso
+## 13. Uso
 
 ```bash
 # 1. Il test di falsificazione: la classifica del funding persiste?
@@ -940,7 +1040,7 @@ Le risposte HTTP sono cachate in `.cache/` (gitignorata). `--no-cache` la svuota
 
 ---
 
-## 13. Runbook operativo
+## 14. Runbook operativo
 
 ### Quello che NON serve
 
@@ -1037,7 +1137,7 @@ research/funding_arb/
 ├── metrics.py     # expectancy, Wilson CI, Sharpe, drawdown, attribuzione PnL
 ├── run.py         # CLI (6 modalità: single-pair, --persistence, --portfolio,
 │                  #      --liquidity, --depth-history, --basis)
-└── tests/         # 64 test: lookahead, normalizzazione, contabilità del funding,
+└── tests/         # 68 test: lookahead, normalizzazione, contabilità del funding,
                    # pareggi nel ranking, aritmetica del book, righe corrotte,
                    # qualità della copertura
 ```
