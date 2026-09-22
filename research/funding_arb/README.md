@@ -365,6 +365,30 @@ giorni, 56 coin, finestre **non sovrapposte**:
 quintile più ricco va poi davvero a pagare il 12% annualizzato contro l'8% della
 mediana. La premessa regge.
 
+### Su tre anni, non su sei mesi
+
+Il funding di Hyperliquid arriva indietro fino a **settembre 2023** — 26.279
+settlement orari per coin, gratis e senza chiavi. E `persistence.py` usa *solo*
+dati di funding, niente candele: il test si può quindi rifare sull'intero storico
+senza altro. 39 coin, 1.095 giorni:
+
+| finestra | periodi | ρ | ρ min | top quintile | mediana | bottom quintile | Q1−Q5 |
+|---|---|---|---|---|---|---|---|
+| 7g | **155** | 0.652 | +0.21 | **+26.7%** | +14.8% | −3.8% | +30.5% |
+| 14g | 77 | 0.648 | +0.26 | +25.6% | +15.1% | −1.1% | +26.7% |
+| 30g | 35 | 0.633 | +0.34 | +23.4% | +15.8% | +0.4% | +23.1% |
+| 90g | 11 | 0.643 | +0.53 | +20.7% | +13.0% | +2.2% | +18.5% |
+
+Due cose importanti. **ρ è identico** a quello dei 180 giorni (0.652 contro 0.649
+a 7 giorni), su un campione otto volte più lungo e **mai negativo in 155 periodi**
+indipendenti: la persistenza non era un artefatto della finestra recente.
+
+E il funding storico è il **doppio** di quello recente: top quintile +26.7% contro
++12.1%, mediana +14.8% contro +8.0%. Il campione di 180 giorni su cui ho costruito
+il book era il periodo *magro*, non quello favorevole. Il caveat che avevo scritto
+al §6 ("questo campione vede il caso favorevole") era sbagliato nel verso opposto,
+e i numeri sopra lo correggono.
+
 > Un dettaglio che ha quasi falsato il risultato: la prima versione di `spearman()`
 > non gestiva i **pareggi**. Il funding di Hyperliquid ha un floor dove decine di
 > coin stanno a un valore *identico*; assegnare loro ranghi arbitrari per ordine di
@@ -543,7 +567,71 @@ numeri — circa 65bp di APR — è il prezzo di aver smesso di indovinare.
 
 ---
 
-## 8. Rischi
+## 8. La distribuzione storica dello slippage
+
+Il §7 misura il costo da un book *live*: risponde a "quanto costa adesso" e a
+nient'altro. Il consiglio che ne era seguito — campionare con un cron per un mese
+— era **sbagliato, o almeno inutile**. Binance pubblica archivi giornalieri
+`bookDepth` dal 2023, gratuiti e senza autenticazione, che coprono ogni simbolo di
+questo universo. La distribuzione non va aspettata: va scaricata.
+
+Ogni file contiene, ogni 30 secondi, il **notional cumulato** entro 0.2%, 1%, 2%,
+3%, 4% e 5% dal mid, su entrambi i lati. È esattamente l'input per prezzare un
+ordine: si cammina verso l'esterno finché il cumulato copre la size, e la distanza
+media percorsa è lo slippage.
+
+Round trip su una gamba perp, ultimi 14 giorni, 40.320 snapshot per simbolo:
+
+| simbolo | $10k mediana | p90 | p99 | peggio | p99/mediana |
+|---|---|---|---|---|---|
+| BTCUSDT | 0.0bp | 0.2 | 0.5 | 0.5 | *gratis* |
+| ETHUSDT | 0.0bp | 0.4 | 0.6 | 0.6 | *gratis* |
+| NEARUSDT | 0.9bp | 1.2 | 1.6 | 17.0 | 1.8× |
+| TAOUSDT | 1.0bp | 1.6 | **295.1** | 335.8 | **296×** |
+| ONDOUSDT | 1.1bp | 23.4 | 80.4 | 382.1 | 71× |
+| WLDUSDT | 1.4bp | 2.6 | 2.6 | 14.2 | 1.9× |
+| ENAUSDT | 1.4bp | 27.9 | **277.3** | 318.2 | **193×** |
+| AAVEUSDT | 1.5bp | 3.1 | 9.8 | 15.6 | 6.6× |
+
+**La colonna che conta è l'ultima.** Le mediane sono tutte sotto i 2bp e sembrano
+rassicuranti; ma su TAO ed ENA il 99° percentile è **200-300 volte** la mediana. E
+un carry non si chiude in un momento mediano: si chiude quando il funding si
+inverte, cioè esattamente quando la profondità è sparita. Dimensionare sulla
+mediana significa dimensionare sul caso che non ti capiterà mai quando serve.
+
+Nota che NEAR e WLD hanno stress multiple di 1.8-1.9× mentre TAO ed ENA stanno a
+200-300×. **Non è una proprietà della liquidità mediana** — hanno mediane quasi
+identiche — ma della fragilità del book. È una dimensione di rischio che nessuna
+delle metriche precedenti vedeva.
+
+### Due bug trovati facendo questo
+
+**Il parser scartava tutto.** Il campo `percentage` è scritto `"-5.00"`, non
+`"-5"`, quindi `int()` sollevava e ogni riga veniva saltata in silenzio: zero
+snapshot su 2.880. E c'è una banda a **0.2%** oltre a quelle intere — trattare la
+prima banda come larga 1% sovrastima di cinque volte il costo di un ordine piccolo.
+
+**L'archivio contiene giornate corrotte.** Dal 7 all'11 settembre 2026 NEARUSDT
+riporta **13 $ di notional identici su tutte e sei le bande**. Un book reale si
+approfondisce allontanandosi dal mid: il cumulato a 5% non può uguagliare quello a
+0.2%. Lasciate dentro, quelle righe si travestono da crisi di liquidità — da sole
+producevano un "30% degli snapshot non assorbe 10.000 $" su un perp che scambia
+centinaia di milioni al giorno. `is_plausible()` le rifiuta, e dopo il filtro
+NEAR passa da 30.3% a **0.0%** di snapshot non coperti.
+
+### Limiti onesti
+
+- **È Binance, non Hyperliquid/OKX.** Profondità e spread correlano fra venue ma
+  non coincidono. L'uso corretto è prendere da qui la **forma** della distribuzione
+  (il rapporto p99/mediana) e il **livello** da `--liquidity` sui venue davvero
+  scambiati.
+- **Non vede lo spread dentro la prima banda.** Per ordini che non escono dallo
+  0.2% il costo risulta quasi nullo, mentre il mezzo spread si paga comunque. Il
+  modulo serve alle size che vanno oltre il touch, non a quelle minuscole.
+
+---
+
+## 9. Rischi
 
 ### Modellati dal backtest
 
@@ -584,7 +672,7 @@ minuti chiamando un modello non è un risk manager.
 
 ---
 
-## 9. Uso
+## 10. Uso
 
 ```bash
 # 1. Il test di falsificazione: la classifica del funding persiste?
@@ -628,83 +716,82 @@ Le risposte HTTP sono cachate in `.cache/` (gitignorata). `--no-cache` la svuota
 
 ---
 
-## 10. Runbook operativo
+## 11. Runbook operativo
 
 ### Quello che NON serve
 
-**TAAPI.** Il repo ha un client con `backtrack`/`results` per scaricare indicatori
-storici (EMA, MACD, RSI). Per questa strategia sono **irrilevanti**, e usarli
-sarebbe tornare all'approccio previsivo che è già fallito al §5: l'edge qui è un
-premio strutturale, pagato a chi fornisce il lato impopolare del book, non un
-pattern che un oscillatore possa anticipare. Il piano gratuito è anche limitato a
-1 richiesta ogni 15 secondi, quindi un download storico di massa non è comunque
-praticabile.
+**TAAPI.** Verificato contro la loro API: `/candles` esiste (risponde 401 senza
+chiave), ma un endpoint per il funding **non esiste** — `api.taapi.io/fundingrate`
+risponde *"The endpoint (or indicator) you are calling does not exist"*. TAAPI è
+un'API di indicatori tecnici sopra le candele: dà EMA, MACD, RSI e OHLCV, non
+tassi di funding. Siccome il funding **è** l'edge, TAAPI non può fornire il dato
+che conta. Gli indicatori sono comunque irrilevanti qui (§5: l'edge è un premio
+strutturale, non un pattern prevedibile), e il piano free è limitato a 1 richiesta
+ogni 15 secondi.
+
+**Un abbonamento per lo storico.** Non c'era un problema di dati da risolvere:
+
+| dato | fonte | profondità | costo |
+|---|---|---|---|
+| funding rate | Hyperliquid `/info` | **3 anni** (26.279 punti orari) | gratis |
+| profondità del book | Binance `data.binance.vision` | **dal 2023**, ogni 30s | gratis |
+| candele spot | KuCoin, Coinbase, Kraken, Gate.io, MEXC, Bitget | anni | gratis |
+| candele perp HL | Hyperliquid `candleSnapshot` | 208 giorni (cap del venue) | gratis |
+
+Il solo vincolo reale è l'ultima riga: le candele perp di Hyperliquid si fermano a
+5.000 barre. Il funding — il dato che porta l'edge — non è mai stato il problema.
+
+**Il cron di campionamento dello slippage.** Era il mio consiglio precedente ed
+era inutile: gli archivi `bookDepth` danno già la distribuzione storica (§8).
+`--sample-to` resta utile solo per HL/OKX specificamente, che non pubblicano
+archivi, ma non è più sul percorso critico.
 
 **La testnet, per validare l'edge.** Un book di testnet è una manciata di ordini
-sintetici: ci misureresti la testnet, non il mercato. Lo slippage — l'unico numero
-che mancava — si legge dal book *pubblico* di mainnet, gratis e senza rischio
-(§7). La testnet serve a una cosa sola, ed è il punto 4 qui sotto.
+sintetici. Serve a una cosa sola, il punto 4.
 
 ### Quello che serve, in ordine
 
-**1. Accumulare la distribuzione dello slippage.** È l'unico passo che richiede
-tempo di calendario, e quindi l'unico che devi far partire tu. Uno snapshot
-singolo non basta: la profondità alle 3 di notte di domenica e quella durante una
-cascata di liquidazioni differiscono di un ordine di grandezza — e un carry va
-chiuso proprio nel secondo tipo di momento.
+**1. Ridimensionare il book sul p99, non sulla mediana.**
 
 ```bash
-python -m research.funding_arb.run --liquidity --notional 10000 \
-    --universe-size 30 --sample-to data/liquidity.jsonl
+python -m research.funding_arb.run --depth-history --depth-days 30 --notional 10000
 ```
 
-Mettilo in cron **ogni ora** su Railway. Il file è JSON Lines, in append: ogni
-riga è uno snapshot per coin. Dopo 2-4 settimane hai una distribuzione, e il
-numero contro cui pianificare è un **percentile cattivo** (p90, p95), non la
-mediana. Rilanciando il comando ti stampa anche mediana e caso peggiore per coin.
+Poi rifai il §6 escludendo le coin il cui p99 è insostenibile, non quelle la cui
+mediana lo è. Su TAO ed ENA il p99 è 200-300× la mediana: sono le prime da tagliare
+anche se oggi sembrano economiche.
 
-**2. Rifare il backtest con i costi veri.** Quando il file ha abbastanza
-campioni:
+**2. Estendere il backtest del book a 3 anni.** Il funding c'è; mancano le candele
+perp oltre i 208 giorni. Due strade, in ordine di onestà:
+   - portare la gamba perp su un venue con storico profondo e raggiungibile
+     (MEXC ha 1.5 anni di funding e candele lunghe: `contract.mexc.com`);
+   - oppure girare il backtest a 3 anni **solo su funding e commissioni**, con il
+     basis posto a zero, e validarlo contro la finestra di 208 giorni dove il
+     basis è misurabile. Il residuo misurato è stato +13.76 $ e +71 $ su ~2.000 $
+     di funding, cioè 1-4% e **di segno positivo**: azzerarlo è un'approssimazione
+     leggermente conservativa, non un trucco. Va comunque dichiarata.
 
-```bash
-python -m research.funding_arb.run --portfolio --days 180 \
-    --venue-a okx_spot --venue-b hyperliquid --universe-size 24 \
-    --max-positions 5 --entry-rank 5 --exit-rank 20 --rank-lookback 168 \
-    --min-hold 480 --leverage 1 \
-    --use-measured-slippage --max-slippage-bps 40
-```
-
-Se l'APR regge con il p90 al posto dello snapshot istantaneo, la strategia esiste.
-Se non regge, hai risparmiato il capitale.
-
-**3. Allungare il campione storico.** 180 giorni in una finestra rialzista sono
-pochi, e il funding è strutturalmente più ricco in bull market. Da Railway, Bybit
-e Binance sono raggiungibili (da altri host CloudFront li blocca) e hanno anni di
-storico: rifai il §6 con `--venue-b bybit` per vedere se ρ ≈ 0.65 regge anche in
-un ribasso.
+**3. Walk-forward.** Le 144 configurazioni del §6 sono in-sample. Con 3 anni di
+funding c'è finalmente abbastanza campione per tarare su una finestra e misurare
+sulla successiva.
 
 **4. Solo adesso la testnet, e solo per l'impianto.** Non per validare l'edge, ma
-per verificare che la meccanica funzioni end-to-end: che le due gambe partano
-insieme, che gli arrotondamenti di size passino, che il codice si accorga di un
-fill parziale. `HYPERLIQUID_NETWORK=testnet` è già supportato in
-`config_loader.py`. La domanda a cui rispondere è una sola: **quanti secondi
-passano fra il fill della prima gamba e quello della seconda?** In quel buco sei
-direzionale, ed è l'unica variabile che né il book pubblico né i dati storici
-possono darti. Misurala e mettila in `CostModel.execution_slip_bps`.
+per verificare la meccanica: che le due gambe partano insieme, che gli
+arrotondamenti di size passino, che il codice si accorga di un fill parziale.
+`HYPERLIQUID_NETWORK=testnet` è già supportato in `config_loader.py`. Una sola
+domanda: **quanti secondi passano fra il fill della prima gamba e quello della
+seconda?** In quel buco sei direzionale, ed è l'unica variabile che né il book
+pubblico né gli archivi possono darti. Misurala e mettila in
+`CostModel.execution_slip_bps`.
 
-**5. Walk-forward prima del capitale reale.** Le 144 configurazioni del §6 sono
-valutate in-sample. Taratura su una finestra, misura su quella successiva, rolling.
-
-**6. Poi, e solo poi**, capitale reale alla size minima.
+**5. Poi, e solo poi**, capitale reale alla size minima.
 
 ### Un avvertimento sulla scala
 
 A 500-5.000 $ questa strategia **non ha senso economico**. Serve margine su due
 venue contemporaneamente, i size minimi sono ~10-20 $ per ordine, e il 2% annuo su
-2.000 $ fa 40 $. Peggio: la tabella del §7 misura lo slippage a 10.000 $ per
-gamba; a size più piccole paghi comunque il mezzo spread, che su una alt sottile
-può essere più largo dell'intero rendimento annuo. La soglia in cui il carry
-ripaga l'infrastruttura è nell'ordine delle decine di migliaia di dollari.
+2.000 $ fa 40 $. La soglia in cui il carry ripaga l'infrastruttura è nell'ordine
+delle decine di migliaia di dollari.
 
 ---
 
@@ -721,11 +808,12 @@ research/funding_arb/
 ├── universe.py    # scoperta delle coin copribili (OI + esistenza dello spot)
 ├── portfolio.py   # book trasversale: classifica l'universo, tiene i primi N
 ├── liquidity.py   # costo di esecuzione reale, percorrendo i book live
+├── depth_history.py # distribuzione storica del costo, dagli archivi Binance
 ├── metrics.py     # expectancy, Wilson CI, Sharpe, drawdown, attribuzione PnL
-├── run.py         # CLI (4 modalità: single-pair, --persistence, --portfolio,
-│                  #      --liquidity)
-└── tests/         # 45 test: lookahead, normalizzazione, contabilità del funding,
-                   # pareggi nel ranking, aritmetica del book
+├── run.py         # CLI (5 modalità: single-pair, --persistence, --portfolio,
+│                  #      --liquidity, --depth-history)
+└── tests/         # 54 test: lookahead, normalizzazione, contabilità del funding,
+                   # pareggi nel ranking, aritmetica del book, righe corrotte
 ```
 
 ## Ordine di lettura consigliato

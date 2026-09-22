@@ -76,6 +76,10 @@ def build_parser() -> argparse.ArgumentParser:
     g.add_argument("--max-slippage-bps", type=float, default=None,
                    help="with --use-measured-slippage: drop coins whose measured "
                         "round trip exceeds this")
+    g.add_argument("--depth-history", action="store_true",
+                   help="historical execution cost from Binance's public bookDepth "
+                        "archives - gives the distribution without waiting for one")
+    g.add_argument("--depth-days", type=int, default=14)
     g.add_argument("--liquidity", action="store_true",
                    help="measure real execution cost from live order books")
     g.add_argument("--sample-to", default=None,
@@ -147,6 +151,20 @@ def _as_dict(result: BacktestResult, m: Metrics) -> dict:
             for t in result.trades
         ],
     }
+
+
+def run_depth_history_mode(args) -> int:
+    """The distribution `--liquidity` can only sample, read from the archives."""
+    from .depth_history import format_history, scan_history
+    from .universe import discover
+
+    coins = args.universe or discover(min_open_interest=args.min_oi,
+                                      limit=args.universe_size)
+    symbols = [f"{c.upper()}USDT" for c in coins]
+    print(f"scarico {args.depth_days} giorni di bookDepth per {len(symbols)} simboli...")
+    rows = scan_history(symbols, notional=args.notional, n_days=args.depth_days)
+    print(format_history(rows, args.depth_days))
+    return 0
 
 
 def run_liquidity_mode(args) -> int:
@@ -289,6 +307,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         from .venues import CACHE_DIR
         shutil.rmtree(CACHE_DIR, ignore_errors=True)
 
+    if args.depth_history:
+        return run_depth_history_mode(args)
     if args.liquidity:
         return run_liquidity_mode(args)
     if args.persistence:

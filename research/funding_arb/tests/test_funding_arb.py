@@ -569,3 +569,93 @@ def test_measured_round_trip_is_spread_over_the_four_crossings():
     assert book.for_coin("TAO").slippage_bps == pytest.approx(10.0)
     # fees (10 + 4.5) + slippage (2 x 10) per side, doubled for the round trip
     assert book.for_coin("TAO").round_trip_bps == pytest.approx(2 * (14.5 + 20.0))
+
+
+# --------------------------------------------------------- historical depth
+
+from research.funding_arb.depth_history import (  # noqa: E402
+    DepthSnapshot,
+    is_plausible,
+    round_trip_bps,
+    slippage_bps,
+    summarize as depth_summarize,
+)
+
+
+def make_snapshot(bands):
+    return DepthSnapshot(timestamp="2026-01-01 00:00:00", asks=dict(bands),
+                         bids=dict(bands))
+
+
+def test_an_order_inside_the_first_band_pays_half_of_it():
+    """Filling a fraction of the first band averages halfway into it, not to its edge."""
+    # $1m standing within 0.2% of mid; a $1m order therefore averages 0.1% = 10bp.
+    bands = {0.2: 1_000_000.0, 1.0: 5_000_000.0}
+    assert slippage_bps(bands, 1_000_000) == pytest.approx(10.0)
+    # Half that size averages halfway again: 0.05% = 5bp.
+    assert slippage_bps(bands, 500_000) == pytest.approx(5.0)
+
+
+def test_slippage_grows_with_size():
+    bands = {0.2: 1_000_000.0, 1.0: 5_000_000.0, 5.0: 20_000_000.0}
+    small = slippage_bps(bands, 100_000)
+    large = slippage_bps(bands, 4_000_000)
+    assert 0 < small < large
+
+
+def test_a_size_beyond_the_published_bands_has_no_answer():
+    """Past 5% out the archive says nothing, so neither do we."""
+    bands = {0.2: 1_000.0, 1.0: 5_000.0, 5.0: 20_000.0}
+    assert slippage_bps(bands, 10_000_000) is None
+    assert round_trip_bps(make_snapshot(bands), 10_000_000) is None
+
+
+def test_zero_size_costs_nothing():
+    assert slippage_bps({0.2: 1_000.0}, 0) == 0.0
+
+
+def test_round_trip_charges_both_crossings():
+    bands = {0.2: 1_000_000.0, 1.0: 5_000_000.0}
+    one_side = slippage_bps(bands, 500_000)
+    assert round_trip_bps(make_snapshot(bands), 500_000) == pytest.approx(2 * one_side)
+
+
+def test_flat_depth_across_bands_is_rejected_as_corrupt():
+    """A real book deepens as you walk out; the archive sometimes says otherwise.
+
+    NEARUSDT's 2026-09-07..11 files report the same $13 at 0.2% and at 5%. Left
+    in, those rows read as a liquidity crisis on a perp trading hundreds of
+    millions a day - they alone produced a spurious '30% of snapshots could not
+    absorb $10k'.
+    """
+    corrupt = {0.2: 13.0, 1.0: 13.0, 2.0: 13.0, 3.0: 13.0, 4.0: 13.0, 5.0: 13.0}
+    assert not is_plausible(make_snapshot(corrupt))
+
+    real = {0.2: 281_466.0, 1.0: 1_505_821.0, 2.0: 2_621_683.0,
+            3.0: 3_216_967.0, 4.0: 4_611_760.0, 5.0: 5_580_443.0}
+    assert is_plausible(make_snapshot(real))
+
+
+def test_empty_or_zero_depth_is_rejected():
+    assert not is_plausible(make_snapshot({}))
+    assert not is_plausible(make_snapshot({0.2: 0.0, 5.0: 0.0}))
+
+
+def test_stress_multiple_is_withheld_when_the_median_is_noise():
+    """A ratio against a rounding-error median says nothing; the cost is just free."""
+    free = [make_snapshot({0.2: 5e8, 1.0: 1e9, 5.0: 4e9})] * 100
+    stats = depth_summarize("BTCUSDT", free, notional=10_000)
+    assert stats.median_bps < 0.1
+    assert stats.stress_multiple != stats.stress_multiple  # NaN, deliberately
+
+    pricey = [make_snapshot({0.2: 20_000.0, 1.0: 60_000.0, 5.0: 200_000.0})] * 100
+    stats = depth_summarize("THINUSDT", pricey, notional=10_000)
+    assert stats.median_bps > 0.1
+    assert stats.stress_multiple == pytest.approx(1.0)  # constant book, no stress
+
+
+def test_uncovered_snapshots_are_counted_not_silently_dropped():
+    covered = make_snapshot({0.2: 1e6, 1.0: 5e6, 5.0: 2e7})
+    thin = make_snapshot({0.2: 100.0, 1.0: 200.0, 5.0: 400.0})
+    stats = depth_summarize("MIXED", [covered] * 3 + [thin], notional=1_000_000)
+    assert stats.uncovered_share == pytest.approx(0.25)
