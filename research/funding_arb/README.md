@@ -1,5 +1,10 @@
 # Arbitraggio sul funding rate — analisi e framework di backtest
 
+> **Riprendi da qui.** `MEMORY.md` ha tutti i numeri già misurati e i vicoli
+> ciechi — consultalo prima di rimisurare qualcosa. `CLAUDE.md` ha le regole
+> operative. `NEXT_SESSION.md` è il brief per la fase successiva (carry su
+> commodity via IBKR/TWS). Questo file è l'analisi lunga.
+
 Studio di fattibilità su dati reali: un bot delta-neutral che incassa il *funding
 rate* dei perpetual, invece di scommettere sulla direzione del prezzo.
 
@@ -1123,6 +1128,10 @@ delle decine di migliaia di dollari.
 
 ```
 research/funding_arb/
+├── MEMORY.md      # fatti stabiliti, vicoli ciechi, bug — consultare per primo
+├── CLAUDE.md      # regole operative per Claude Code in questa cartella
+├── NEXT_SESSION.md  # brief: carry su commodity via IBKR/TWS
+├── fetch_ib_curves.py  # scarica curve futures da TWS (BOZZA, mai eseguita)
 ├── venues.py     # adapter API pubbliche + cache su disco (HL, OKX, Bybit, Binance, spot)
 ├── costs.py      # modello di costo e curva di breakeven
 ├── dataset.py    # allineamento su griglia oraria causale, normalizzazione intervalli
