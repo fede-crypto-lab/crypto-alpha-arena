@@ -134,6 +134,38 @@ Attenzione a tre cose:
 Quest'ultimo punto è il rischio più serio di tutto il passo: la stagionalità
 produce **persistenza spuria**, che somiglia esattamente al risultato cercato.
 
+### La stagionalità come segnale, non come contaminante
+
+È stato chiesto se si possa invertire il problema e usare la stagionalità come
+edge (cfr. SeasonAlgo e lo spread trading stagionale). Vedi `MEMORY.md` §11-bis
+per l'indagine completa. In sintesi, per questa sessione:
+
+- **Non fare scanning.** Lo spazio di ricerca è di ~120 milioni di combinazioni e
+  con 30 anni di dati ci si attendono ~509 spread con 27/30 anni vincenti **per
+  puro caso**. Qualunque pattern trovato scansionando è indistinguibile dal
+  rumore, e l'evidenza out-of-sample pubblicata (arXiv 2609.12227) è negativa.
+- **Il test giusto è una decomposizione, non una ricerca.** Il carry di una
+  commodity e la sua stagionalità sono in larga parte **lo stesso numero**: la
+  pendenza della curva a novembre sul gas *è* la stagionalità invernale. Quindi la
+  domanda ben posta non è "quale dei due funziona" ma:
+
+  > quanta parte della ρ del carry sopravvive dopo aver rimosso la componente
+  > stagionale media di ogni contratto?
+
+  Si ottiene con una sola misura aggiuntiva: calcolare il carry medio di ogni
+  (simbolo, mese-di-calendario) sulla storia **esclusa l'osservazione corrente**,
+  sottrarlo, e rifare il test di persistenza sul residuo.
+
+  - Se ρ crolla → il carry commodity **è** stagionalità, quindi è già prezzato in
+    curva e non è un premio. Filone chiuso.
+  - Se ρ regge → esiste un premio strutturale oltre la stagionalità, che è
+    esattamente l'analogo del funding. Si prosegue.
+
+  Una misura, due domande. Falla nel passo 3, non in un passo separato.
+- **Se qualcosa merita un test dedicato dopo**, è il vincolo di full carry (vedi
+  `MEMORY.md` §11-bis): in contango lo spread è limitato dal costo di stoccaggio,
+  in backwardation no. È un'asimmetria fisica, non statistica.
+
 ---
 
 ## Passo 3 — il test di persistenza

@@ -238,6 +238,55 @@ Perpetual Futures"* **sembra** una smentita e non lo è: misura l'IC di
 
 ---
 
+## 11-bis. Stagionalità delle commodity — indagata, per lo più negativa
+
+Domanda posta: si può usare la stagionalità come segnale invece di subirla come
+contaminante? Indagata senza scrivere codice; ecco cosa è emerso.
+
+**Due stagionalità diverse, e solo una paga.**
+- *Stagionalità-previsione* (il gas sale d'inverno): pubblicamente nota,
+  meccanicamente prevedibile, e **già dentro la curva**. La forma della curva
+  forward *è* la previsione stagionale del mercato. Scommetterci significa
+  scommettere che la curva sottoprezzi un fatto scritto in ogni manuale.
+- *Stagionalità-premio al rischio*: compenso per aver assorbito un rischio
+  specifico e stagionale (es. rischio meteo intorno al raccolto, che gli hedger
+  pagano per scaricare). Questa può pagare, perché qualcuno *deve* pagarla — la
+  stessa struttura del funding.
+
+**Lo spazio di ricerca di uno scanner stagionale** (~50 commodity, spread
+calendario e inter-commodity, finestre entrata/uscita): **~120 milioni di
+combinazioni**. Con 30 anni di storico, per puro caso ci si attende:
+
+| anni vincenti | combinazioni attese per caso |
+|---|---|
+| 24/30 (80%) | **86.346** |
+| 27/30 (90%) | **509** |
+| 28/30 (93%) | 52 |
+| 29/30 (97%) | 3 |
+
+"Ha vinto 27 anni su 30" è ciò che si trova centinaia di volte in dati casuali.
+
+**Evidenza out-of-sample** (arXiv 2609.12227, 2026): 15 commodity liquide,
+2016-2024, finestre rolling di 10 anni, tre metodi (DVR, SSA, RLSSA), **con costi
+e correzione per confronti multipli**. Nessun modello stagionale batte un
+benchmark equal-weight long (Sharpe 0.191). Il migliore ha rendimenti cumulati
+mediani negativi.
+⚠️ Testavano posizioni *outright* mensili, **non spread calendario**. Non è quindi
+una confutazione completa della variante a spread.
+
+**Dove l'idea regge: il vincolo di full carry.** Lo spread fra due mesi adiacenti
+non può superare il costo di stoccaggio + finanziamento + assicurazione in
+contango, perché altrimenti si compra il vicino, si stocca e si vende il lontano.
+In backwardation **non esiste un vincolo simmetrico**. Questa asimmetria è
+meccanica e fisica, non statistica — è la versione più solida dell'idea e l'unica
+che meriti un test.
+
+**SeasonAlgo**: SaaS, 30 anni di storico, nessuna API o export documentati.
+Descrive sé stesso come "backtesting e ottimizzazione di qualsiasi strategia
+stagionale su tutto lo storico", che è precisamente la ricerca quantificata sopra.
+
+---
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di
