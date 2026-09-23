@@ -16,8 +16,57 @@ Ultimo aggiornamento: sessione del 2026-09-22, branch
 
 Il carry sul funding (long spot / short perp, selezione trasversale) è un edge
 **reale, strutturale e non direzionale**, che vale **+0.96% APR sul capitale**
-misurato su 540 giorni con basis reale e universo liquido. È sotto il risk-free.
-Ogni volta che ho sostituito un'ipotesi con una misura, la stima è scesa.
+misurato su 540 giorni con basis reale e universo liquido. **È un quarto del
+risk-free** (4.14%): vedi §1-bis per la tabella completa in euro e le soglie di
+capitale. Ogni volta che ho sostituito un'ipotesi con una misura, la stima è scesa.
+
+---
+
+## 1-bis. Le percentuali, e il confronto che decide tutto
+
+| strategia | APR sul capitale | 10k € | 50k € | 100k € | vs risk-free (50k) |
+|---|---|---|---|---|---|
+| Carry cripto, **regime magro** — *misurato, 540g* | **0.96%** | €96 | €480 | €960 | **−1.590 €** |
+| Carry cripto, regime storico — *stima 2×, non misurata* | 2.00% | €200 | €1.000 | €2.000 | −1.070 € |
+| Carry commodity, ipotesi prudente — **non misurata** | 4.00% | €400 | €2.000 | €4.000 | −70 € |
+| Carry commodity, ipotesi Koijen (Sharpe 0.7) — **non misurata** | 7.00% | €700 | €3.500 | €7.000 | +1.430 € |
+| **Risk-free — T-bill 3m USA (FRED DGS3MO, 18-09-2026)** | **4.14%** | €414 | €2.070 | €4.140 | — |
+
+**La riga che decide è l'ultima.** Il tasso privo di rischio è al 4.14%. Il carry
+cripto misurato ne rende **un quarto**, richiedendo margine su due venue, rischio
+di liquidazione e ~50 ore l'anno di gestione: a 50k fanno **9.60 €/ora**, contro
+2.070 € che il risk-free produce senza toccare nulla.
+
+Solo le prime due righe poggiano su misure di questo repo. Le due sulle commodity
+sono **ipotesi non verificate**, messe deliberatamente una sotto e una sopra il
+risk-free perché è esattamente lì che si gioca la decisione del filone commodity.
+
+⚠️ Il risk-free si muove. Prima di rileggere questa tabella, riprendi DGS3MO da
+FRED (`https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS3MO`, raggiungibile)
+e rifai la colonna di destra. Se il risk-free scende sotto il 2% mentre il funding
+risale verso i livelli storici, **il segno si inverte** ed è l'unico scenario in
+cui il carry cripto torna interessante.
+
+### La strategia che funziona, operativamente
+
+Carry trasversale delta-neutral, la configurazione da cui esce lo 0.96%:
+
+> 5 slot di capitale. Ogni 8 ore classifichi ~20 coin per funding realizzato nelle
+> ultime 168h. Apri i primi 5 comprando spot e vendendo il perp sullo stesso
+> notional, **leva 1× sulla gamba perp**. Esci solo quando una coin scende sotto il
+> 20° posto **e** sono passati almeno 20 giorni. Escludi le coin con p99 di
+> slippage sopra i 40bp e il quintile più volatile.
+
+Hold medio 65 giorni, 16 rotazioni l'anno, win rate 75% [CI 55-88%], 3
+liquidazioni su 24 rotazioni, max drawdown 2.73%.
+
+### Soglie di capitale
+
+- **10-50k**: nessuna strategia qui dentro ha senso economico contro il risk-free.
+  Non è un problema di taratura: il divario è di 3-4×, non di qualche punto base.
+- **100k+**: il carry commodity *potrebbe* averlo, ma solo avvicinandosi
+  all'ipotesi alta — che è la stima di Koijen su scala istituzionale, 1972-2012,
+  con contratti full-size e non micro.
 
 ---
 
