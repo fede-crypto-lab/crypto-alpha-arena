@@ -426,6 +426,98 @@ per quel caso.
 
 ---
 
+## 11-ter. Commodity: il carry c'è, ma il long-short direzionale non lo cattura
+
+Misurato su dati EIA (4 commodity energia, curve C1-C4). **Correzione importante
+rispetto a come avevo posto l'analogia**: il carry commodity NON è
+strutturalmente identico al cash-and-carry cripto.
+
+- **Cripto**: spot contro perp dello *stesso* asset → rischio prezzo ≈ 0 per
+  costruzione.
+- **Commodity, roll yield**: si incassa con una posizione **direzionale** sul
+  front month; la neutralità si ottiene solo lunghi su alto-carry e corti su
+  basso-carry, cioè un long-short di paniere **con rischio di prezzo relativo**.
+- **Commodity, spread calendario**: delta-neutral davvero, ma il motore è la
+  convergenza e l'economia dello stoccaggio, non il roll yield. **Non testato.**
+
+### La materia prima c'è, e in abbondanza
+
+Quanto spesso il carry supera il breakeven dei costi (2.18% a 14g su MCL):
+
+| commodity | giorni | media | % in backwardation | % sopra soglia | carry medio quando sopra |
+|---|---|---|---|---|---|
+| WTI | 9.492 | +0.3% | 46% | **42%** | **+21.6% APR** |
+| NATGAS | 7.407 | **−24.2%** | 19% | 17% | +43.4% APR |
+| HEATOIL | 6.044 | +0.4% | 35% | 30% | +26.3% APR |
+| GASOLINE | 4.582 | +4.1% | 61% | **56%** | **+28.0% APR** |
+
+Rapporto segnale/soglia **10-20×**, contro **0.6×** del cripto (edge ~5% APR
+contro breakeven 8.86%). Il gas è in contango strutturale (−24% medio): è il
+costo dello stoccaggio, non un'anomalia.
+
+### Ma il segnale non diventa rendimento
+
+Long-short top/bottom carry, ribilanciato mensilmente, 222 mesi (2005-2024):
+
+| | valore |
+|---|---|
+| segnale (spread di carry) | **63.6% APR** |
+| **rendimento realizzato lordo** | **5.7% APR** |
+| volatilità realizzata | **42.6%** |
+| **Sharpe** | **0.13** (0.11 netto costi) |
+| mesi positivi | 55% |
+| peggior mese | **−48.5%** |
+
+**Il carry si è tradotto in rendimento solo per il 9% della sua grandezza.** Quel
+42.6% di volatilità è l'intera differenza col cripto, dove il book delta-neutral
+aveva volatilità ≈ 0 per costruzione.
+
+I costi sono irrilevanti qui: 1.01% APR su 24 gambe MCL l'anno, contro il 39% del
+lordo che si mangiavano nel cripto. **Nelle commodity il problema non sono i
+costi, è il rischio di prezzo** — l'esatto opposto del cripto.
+
+### Due errori miei in questa analisi, corretti
+
+1. **"100% dei mesi con spread positivo"** è una tautologia: il massimo di quattro
+   numeri è sempre sopra il minimo. Non è un win rate.
+2. Il 44% dei mesi la coppia era *lunga benzina / corta gas*. Stare corti sul gas
+   non è raccogliere carry: è una direzionale sulla commodity più volatile che
+   esista, e quel −24% è il compenso per quel rischio.
+
+### Perché il test è informativo ma sul peggior universo possibile
+
+4 commodity, **tutte energia**, 2 posizioni per volta. Koijen riporta Sharpe ~0.7
+su 20+ commodity e più settori. Proiettando la sola diversificazione (ipotesi:
+75% del rischio idiosincratico, **non verificata**):
+
+| posizioni | vol attesa | Sharpe |
+|---|---|---|
+| 2 (misurato) | 42.6% | **0.13** |
+| 10 | 26.9% | 0.21 |
+| 20 | 24.3% | 0.23 |
+
+**La diversificazione da sola non chiude il divario con 0.7.** Le spiegazioni
+possibili — universo mono-settore, correzione del roll troppo grezza, erosione del
+fattore, periodo — non sono distinguibili senza dati più ampi. Non trattare lo 0.23
+come una previsione: la quota idiosincratica è un'assunzione, e con più commodity
+anche lo *spread* di carry si restringerebbe (le 4 energy hanno uno spread estremo
+perché il gas è un outlier).
+
+### Cosa ne consegue per il piano
+
+- **Il long-short energy-only è morto.** Misurato, Sharpe 0.13, peggior mese −48.5%.
+- **La breadth non è opzionale**: servono 12-20 commodity su più settori, ed è
+  esattamente ciò che il pull IBKR deve dare.
+- **Lo spread calendario resta il ramo più interessante**, perché è l'unica
+  struttura che conserva ciò che rendeva attraente il carry cripto — la
+  delta-neutralità vera. È **non testato**.
+- **Reset delle aspettative**: il carry commodity è un fattore **direzionale e
+  volatile**, non una rendita sicura. Anche funzionando bene, è Sharpe 0.4-0.7 con
+  volatilità a due cifre — un profilo di rischio completamente diverso da quello
+  cercato all'inizio.
+
+---
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di
