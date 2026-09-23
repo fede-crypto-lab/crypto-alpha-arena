@@ -24,28 +24,66 @@ capitale. Ogni volta che ho sostituito un'ipotesi con una misura, la stima è sc
 
 ## 1-bis. Le percentuali, e il confronto che decide tutto
 
-| strategia | APR sul capitale | 10k € | 50k € | 100k € | vs risk-free (50k) |
+| strategia | APR sul capitale | 10k € | 50k € | 100k € | vs risk-free EUR (50k) |
 |---|---|---|---|---|---|
-| Carry cripto, **regime magro** — *misurato, 540g* | **0.96%** | €96 | €480 | €960 | **−1.590 €** |
-| Carry cripto, regime storico — *stima 2×, non misurata* | 2.00% | €200 | €1.000 | €2.000 | −1.070 € |
-| Carry commodity, ipotesi prudente — **non misurata** | 4.00% | €400 | €2.000 | €4.000 | −70 € |
-| Carry commodity, ipotesi Koijen (Sharpe 0.7) — **non misurata** | 7.00% | €700 | €3.500 | €7.000 | +1.430 € |
-| **Risk-free — T-bill 3m USA (FRED DGS3MO, 18-09-2026)** | **4.14%** | €414 | €2.070 | €4.140 | — |
+| Carry cripto, **regime magro** — *misurato, 540g* | **0.96%** | €96 | €480 | €960 | **−769 €** |
+| Carry cripto, regime storico — *stima 2×, non misurata* | 2.00% | €200 | €1.000 | €2.000 | −250 € |
+| Carry commodity, ipotesi prudente — **non misurata** | 4.00% | €400 | €2.000 | €4.000 | +750 € |
+| Carry commodity, ipotesi Koijen (Sharpe 0.7) — **non misurata** | 7.00% | €700 | €3.500 | €7.000 | +2.250 € |
+| **Risk-free EUR — BCE deposit facility (23-09-2026)** | **2.50%** | €250 | €1.250 | €2.500 | — |
 
-**La riga che decide è l'ultima.** Il tasso privo di rischio è al 4.14%. Il carry
-cripto misurato ne rende **un quarto**, richiedendo margine su due venue, rischio
-di liquidazione e ~50 ore l'anno di gestione: a 50k fanno **9.60 €/ora**, contro
-2.070 € che il risk-free produce senza toccare nulla.
+### Quale risk-free: EUR, non USD
 
-Solo le prime due righe poggiano su misure di questo repo. Le due sulle commodity
-sono **ipotesi non verificate**, messe deliberatamente una sotto e una sopra il
-risk-free perché è esattamente lì che si gioca la decisione del filone commodity.
+Una versione precedente di questa tabella usava il T-bill USA a 3 mesi (4.17%).
+**È il metro sbagliato per un investitore in euro**: comprare Treasury in dollari
+aggiunge rischio cambio, e coprirlo costa all'incirca il differenziale di tasso
+(parità coperta dei tassi), riportando il rendimento a quello in euro. Il
+riferimento corretto è il tasso euro:
 
-⚠️ Il risk-free si muove. Prima di rileggere questa tabella, riprendi DGS3MO da
-FRED (`https://fred.stlouisfed.org/graph/fredgraph.csv?id=DGS3MO`, raggiungibile)
-e rifai la colonna di destra. Se il risk-free scende sotto il 2% mentre il funding
-risale verso i livelli storici, **il segno si inverte** ed è l'unico scenario in
-cui il carry cripto torna interessante.
+| tasso | valore | uso |
+|---|---|---|
+| BCE deposit facility (`ECBDFR`) | **2.50%** | **il metro** — quanto rende la liquidità in euro |
+| T-bill 3m USA (`DGS3MO`) | 4.17% | in dollari, non confrontabile senza copertura |
+| BTP 10 anni (`IRLTLT01ITM156N`) | 3.99% | ha rischio tasso e duration: non è risk-free |
+
+La correzione cambia la conclusione di grado ma non di segno: il carry misurato
+perde contro il risk-free di **2.6×** invece che di 4.3×, e il regime storico
+stimato (2.00%) arriverebbe **quasi alla pari** con il 2.50%.
+
+⚠️ I tassi si muovono. Riprendi `ECBDFR` da FRED
+(`https://fred.stlouisfed.org/graph/fredgraph.csv?id=ECBDFR`, raggiungibile)
+prima di fidarti della colonna di destra.
+
+### Da cosa nasce lo 0.96% — la catena, e su che base
+
+La base è **100.000 $ di capitale**, che sostengono 50.000 $ di long spot più
+50.000 $ di short perp. Non è il rendimento sul notional: è sul capitale che va
+parcheggiato e non è impiegabile altrove.
+
+| passaggio | risultato |
+|---|---|
+| Funding lordo $2.459 su notional medio in posizione di $28.925 | **5.75% APR** ← *il numero che pubblicizzano le guide* |
+| Book dimensionato per 5 slot = $50.000 di capacità, utilizzo **57.9%**: il capitale fermo resta nel denominatore | 3.33% APR |
+| A leva 1× ogni slot immobilizza **2× notional** (spot intero + margine perp) | 1.66% APR |
+| Meno basis (−$70) e commissioni (−$966 = **39% del funding lordo**) | **0.96% APR** |
+
+I tre punti di perdita, in ordine: **utilizzo** (42% del tempo fermo),
+**struttura del capitale** (2× notional a leva 1×), **commissioni**.
+
+### Monitoraggio: due frequenze, e la soglia che fa scattare l'azione
+
+Le due grandezze si muovono a velocità diverse e non vanno misurate insieme.
+
+- **Livello del funding — settimanale.** Poche chiamate API.
+  `--persistence --days 180 --universe-size 40`
+- **Struttura del segnale — trimestrale.** ~20 minuti e molto download; la
+  persistenza si muove lentissima (ρ 0.65 sia a 180g sia a 3 anni).
+  `--persistence --days 1095`
+
+**Soglia d'azione:** oggi il top quintile rende ~12% APR e la strategia netta
+0.96%. Perché superi il 2.50% euro serve un funding intorno all'**11% sul notional
+impiegato**, cioè un top quintile sopra il **20-25% APR** — dove stava in media
+negli ultimi 3 anni (26.7%). **Allerta sopra il 20% APR sostenuto.**
 
 ### La strategia che funziona, operativamente
 
@@ -62,8 +100,8 @@ liquidazioni su 24 rotazioni, max drawdown 2.73%.
 
 ### Soglie di capitale
 
-- **10-50k**: nessuna strategia qui dentro ha senso economico contro il risk-free.
-  Non è un problema di taratura: il divario è di 3-4×, non di qualche punto base.
+- **10-50k**: il carry cripto non ha senso economico contro il risk-free EUR. Non
+  è un problema di taratura: il divario è di 2.6×, non di qualche punto base.
 - **100k+**: il carry commodity *potrebbe* averlo, ma solo avvicinandosi
   all'ipotesi alta — che è la stima di Koijen su scala istituzionale, 1972-2012,
   con contratti full-size e non micro.

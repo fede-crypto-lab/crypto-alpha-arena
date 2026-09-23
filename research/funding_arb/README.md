@@ -41,9 +41,10 @@ testnet — venga puntato addosso.
    statisticamente. Sotto c'è la metrica da usare al suo posto.
 
 **Il numero da portarsi via:** l'edge è reale, strutturale e non direzionale, ma
-vale **1-3% APR sul capitale** — contro un risk-free al **4.14%** (T-bill 3m,
-settembre 2026), quindi allo stato attuale il confronto lo perde di 3-4 volte
-(tabella in euro e soglie di capitale in `MEMORY.md` §1-bis) — e due progetti indipendenti che hanno fatto lo
+vale **1-3% APR sul capitale** — contro un risk-free in euro del **2.50%** (BCE
+deposit facility, settembre 2026), quindi allo stato attuale il confronto lo perde
+di circa 2.6 volte (tabella in euro, scomposizione dell'APR e soglie di capitale in
+`MEMORY.md` §1-bis) — e due progetti indipendenti che hanno fatto lo
 stesso esercizio con più dati arrivano allo stesso posto (§10): uno conclude che
 il carry è l'unica di sette strategie a sopravvivere all'aritmetica dei costi, e
 che perde comunque contro un titolo di stato.
