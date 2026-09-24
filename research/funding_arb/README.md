@@ -1147,6 +1147,7 @@ research/funding_arb/
 ├── depth_history.py # distribuzione storica del costo, dagli archivi Binance
 ├── basis.py       # qualita della copertura: deriva perp-spot sullholding
 ├── seasonality.py # decomposizione carry vs stagionalita (leave-one-out)
+├── seasonal_walkforward.py # "gli spread sempre vincenti continuano a vincere?"
 ├── metrics.py     # expectancy, Wilson CI, Sharpe, drawdown, attribuzione PnL
 ├── run.py         # CLI (6 modalità: single-pair, --persistence, --portfolio,
 │                  #      --liquidity, --depth-history, --basis)

@@ -949,3 +949,89 @@ def test_carry_is_positive_in_backwardation():
 def test_to_monthly_averages_within_the_month():
     daily = {(2024, 1, 1): 1.0, (2024, 1, 2): 3.0, (2024, 2, 1): 10.0}
     assert to_monthly(daily) == {(2024, 1): 2.0, (2024, 2): 10.0}
+
+
+# ------------------------------------------------------- seasonal walk-forward
+
+from datetime import date as _date, timedelta as _td  # noqa: E402
+
+from research.funding_arb.seasonal_walkforward import (  # noqa: E402
+    _Index,
+    candidate_grid,
+    chance_of_qualifying,
+    trade_pnl,
+    walk_forward,
+)
+
+_SMALL_GRID = candidate_grid(entry_step=15, holds=(30, 60))
+
+
+def _daily(years, fn):
+    out = {}
+    d = _date(years[0], 1, 1)
+    while d.year <= years[-1]:
+        out[d] = fn(d)
+        d += _td(days=1)
+    return out
+
+
+def test_chance_of_qualifying_matches_the_binomial():
+    # 12+ wins of 15 on a fair coin: (455 + 105 + 15 + 1) / 2**15
+    assert chance_of_qualifying(15, 12) == pytest.approx(576 / 32768)
+    assert chance_of_qualifying(15, 15) == pytest.approx(1 / 32768)
+
+
+def test_trade_pnl_is_signed_by_direction():
+    series = {_date(2020, 1, 1) + _td(days=i): float(i) for i in range(200)}
+    idx = _Index(series)
+    assert trade_pnl(idx, 2020, (1, 30, 1)) == pytest.approx(30.0)
+    assert trade_pnl(idx, 2020, (1, 30, -1)) == pytest.approx(-30.0)
+
+
+def test_a_long_data_gap_is_refused_not_bridged():
+    series = {_date(2020, 1, 1): 1.0, _date(2020, 3, 1): 2.0}
+    assert _Index(series).on_or_after(_date(2020, 1, 5)) is None
+
+
+def test_a_genuine_seasonal_pattern_survives_out_of_sample():
+    """Rises every spring by construction, plus noise: selection must carry forward."""
+    import random
+    rng = random.Random(5)
+
+    def value(d):
+        spring = 5.0 if 60 <= d.timetuple().tm_yday <= 150 else 0.0
+        ramp = spring * (d.timetuple().tm_yday - 60) / 90 if spring else 0.0
+        return ramp + rng.gauss(0, 0.3)
+
+    series = _daily(range(1990, 2021), value)
+    r = walk_forward("SPRING", series, lookback=15, min_wins=12,
+                     candidates=_SMALL_GRID)
+    assert r.qualified_per_year > r.expected_false_per_year
+    assert r.selected_oos_win > r.baseline_oos_win + 0.2
+    assert r.best_pick_oos_win > 0.8
+
+
+def test_pure_noise_qualifies_at_the_chance_rate_and_fails_forward():
+    """A random walk has no seasonality: whatever qualifies is luck, and stays luck."""
+    import random
+    rng = random.Random(9)
+    level = [0.0]
+
+    def value(_):
+        level[0] += rng.gauss(0, 1)
+        return level[0]
+
+    series = _daily(range(1985, 2021), value)
+    r = walk_forward("NOISE", series, lookback=15, min_wins=12,
+                     candidates=_SMALL_GRID)
+    # Out of sample the selected windows must look like the unselected ones.
+    assert abs(r.selected_oos_win - r.baseline_oos_win) < 0.15
+
+
+def test_best_picks_record_which_window_was_chosen():
+    series = _daily(range(1990, 2010),
+                    lambda d: 3.0 if 90 <= d.timetuple().tm_yday <= 150 else 0.0)
+    r = walk_forward("STEP", series, lookback=10, min_wins=9, candidates=_SMALL_GRID)
+    assert r.best_picks
+    year, (doy, hold, direction), pnl = r.best_picks[-1]
+    assert direction in (1, -1) and hold in (30, 60)

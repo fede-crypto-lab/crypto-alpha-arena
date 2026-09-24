@@ -200,6 +200,34 @@ intervalli vanno letti di conseguenza.
 
 ---
 
+## Passo 3-bis — gli spread stagionali sui futures (priorità alta)
+
+`MEMORY.md` §11-quater: sugli spot EIA il crack benzina *long dal 21-26 gennaio
+per 90 giorni* vince 23/26 anni fuori campione (CI 71-96%), scelto identico in
+25 anni su 26. **Ma è spot.** Il test decisivo è sui futures, perché il futures di
+maggio a gennaio incorpora già l'attesa primaverile.
+
+Con i dati IBKR costruisci, per ogni anno, lo spread fra contratti dello **stesso
+mese di consegna** (es. `42 * RB_maggio − CL_maggio`, in $/bbl) e passalo a
+`walk_forward`:
+
+```python
+from research.funding_arb.seasonal_walkforward import walk_forward, format_results
+r = walk_forward("RB-CL maggio", serie_giornaliera, lookback=15, min_wins=12, cost=0.05)
+print(format_results([r]))
+for anno, finestra, pnl in r.best_picks: print(anno, finestra, pnl)
+```
+
+Attenzione: una serie per contratto vive ~1 anno, quindi serve concatenare gli
+anni con il contratto dello stesso mese (maggio 2010 per il 2010, maggio 2011 per
+il 2011...), non una serie continua che rolla.
+
+Criteri, fissati ora:
+- **OOS win del best pick con limite inferiore di Wilson > 55%** e
+- **la stessa finestra scelta in almeno 2/3 degli anni** (stabilità) →
+  strategia candidata al paper trading.
+- Se l'OOS scende verso il 50%, la stagionalità era prezzata: filone chiuso.
+
 ## Passo 4 — riferire
 
 Riporta la tabella di `format_persistence`, il confronto con ρ≈0.65 del cripto, e

@@ -518,6 +518,87 @@ perché il gas è un outlier).
 
 ---
 
+## 11-quater. Spread stagionali: il claim "sempre vincenti" testato walk-forward
+
+Domanda: SeasonAlgo mostra spread che vincono da anni — continuano a vincere?
+Testato con `seasonal_walkforward.py`, che riproduce la selezione di uno scanner
+(~1.000 finestre entrata/durata/direzione per spread, tieni quelle con ≥12/15
+anni vincenti) e poi **guarda l'anno successivo**, che nessuno scanner mostra.
+
+Dati: prezzi **spot** EIA (nessuna rollata), 1986-2026, costo 0.05 $/bbl a trade.
+
+| spread | trovati/anno | per caso | IS win | **OOS win** | baseline | best pick OOS [CI 95%] |
+|---|---|---|---|---|---|---|
+| **crack benzina (RB-CL)** | 34.1 | 18.0 | 83% | **64%** | 50% | **23/26 [71-96%]** |
+| crack gasolio (HO-CL) | 16.3 | 18.0 | 82% | 56% | 49% | 18/26 [50-83%] |
+| **benzina vs gasolio** | 38.6 | 18.0 | 84% | **69%** | 49% | 20/26 [58-89%] |
+| Brent − WTI | 9.1 | 18.0 | 81% | 51% | 49% | 13/25 [33-70%] |
+
+Alzando la soglia ("sempre vincenti"):
+
+| spread | soglia | per caso/anno | trovati/anno | IS | OOS |
+|---|---|---|---|---|---|
+| crack benzina | 14/15 | 0.50 | 3.0 (**6×**) | 94% | **76%** |
+| crack benzina | 15/15 | 0.03 | 0.3 | 100% | 78% |
+| benzina vs gasolio | 14/15 | 0.50 | 5.5 (**11×**) | 95% | **75%** |
+| crack gasolio | 14/15 | 0.50 | 0.7 (≈ caso) | 94% | 59% |
+
+### Tre letture
+
+1. **"Sempre vincente" non vuol dire "vincerà".** Anche sugli spread migliori il
+   100% storico diventa **~75% l'anno dopo**. Lo scanner sovrastima di 20-25 punti.
+2. **La diagnosi pratica è "trovati contro per caso".** Se lo scanner trova circa
+   quanti pattern produrrebbe il caso (crack gasolio 16 vs 18; Brent-WTI 9 vs 18),
+   sono rumore e falliscono fuori campione. Se ne trova molti di più (crack benzina
+   6×, benzina vs gasolio 11× a 14/15) c'è stagionalità vera, e regge.
+3. **La stabilità della scelta separa il vero dal rumore.** Sul crack benzina il
+   processo sceglie **la stessa finestra in 25 anni su 26**: *long dal 21-26
+   gennaio per 90 giorni*. Meccanismo fisico: manutenzione delle raffinerie a
+   feb-mar, passaggio alla benzina estiva (più costosa da produrre), scorte che
+   calano prima della driving season. Su benzina vs gasolio invece la finestra
+   salta fra "long febbraio" e "short settembre": più rumorosa.
+
+### Il crack benzina, anno per anno (best pick, fuori campione)
+
+**23/26 vinti. Totale +192 $/bbl = +192.490 $ per spread da 1.000 barili in 26
+anni, media +7.403 $/anno, peggior anno −1.758 $.** Le tre perdite sono piccole
+(−286, −1.758, −1.732) rispetto alle vincite. È la **prima strategia di tutto il
+progetto** con limite inferiore di Wilson ben sopra il 50% su osservazioni
+indipendenti fuori campione (71%).
+
+Benzina vs gasolio: 20/26, +126.590 $ totali, media +4.869 $/anno, ma peggior anno
+**−11.348 $** e il 2026 in perdita (−9.668 $). Più volatile.
+
+### ⚠️ Il caveat che può cambiare tutto: spot ≠ futures
+
+Il test è sui prezzi **spot**. Ma si tradano i **futures**, e il futures di maggio
+sulla benzina a gennaio **incorpora già** l'aspettativa della primavera. Chi compra
+il crack sui futures non incassa la stagionalità spot: incassa solo la parte che la
+curva futures **non aveva previsto**. La stagionalità fisica è reale e forte (questo
+è dimostrato); **quanta ne resta catturabile sui futures non è misurato** — ed è
+l'unica domanda che conta per il trading.
+
+Altri limiti:
+- **2020 da solo vale +48.812 $** (WTI spot negativo ad aprile, crack esploso).
+  Senza il 2020 il totale resta +143.678 $, ma sui futures quell'anno sarebbe stato
+  molto diverso.
+- Le finestre selezionate si sovrappongono: gli 886 trade "selezionati" non sono
+  indipendenti. Il campione onesto è il best pick, **una osservazione per anno**.
+- Code enormi negli spread selezionati: peggior singolo trade −29.73 $/bbl (crack
+  benzina), −65.86 $/bbl (benzina vs gasolio, crisi distillati 2022).
+- **Taglia minima**: un crack RB-CL è 1.000 barili (~100.000 $ di notional per
+  gamba). Per quanto ne so **non esiste un micro RBOB**: da verificare con IBKR, ed è
+  un vincolo reale per capitali piccoli.
+
+### Cosa fa la prossima sessione con questo
+
+Rigira `walk_forward` **sui contratti futures reali** (dati IBKR), sugli spread che
+SeasonAlgo mostra davvero (es. RB maggio − CL maggio). Il modulo è generico: gli
+basta un `{data: valore_dello_spread}`. Se l'OOS win e la stabilità della finestra
+reggono anche lì, c'è una strategia. Se crollano, la stagionalità era già nel prezzo.
+
+---
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di
