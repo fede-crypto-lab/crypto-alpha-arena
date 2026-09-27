@@ -81,12 +81,31 @@ def read_closes(path: str) -> DailySeries:
     return out
 
 
+#: Plausible close ranges per root. "RB" is also Shanghai steel rebar (SHFE,
+#: ~2,000-5,000 CNY/t) on TradingView, and a search for RBM2015 lands there
+#: first. Its file name has the same RBM2015 in it, so without this check a
+#: rebar export would be read as gasoline and yield a confident, wrong crack.
+PLAUSIBLE_CLOSE = {"RB": (0.2, 10.0), "CL": (-50.0, 250.0)}
+
+
+def check_plausible(contract: Contract, series: DailySeries, name: str) -> None:
+    lo, hi = PLAUSIBLE_CLOSE[contract[0]]
+    bad = [v for v in series.values() if not lo <= v <= hi]
+    if bad or "SHFE" in name.upper():
+        raise ValueError(
+            f"{name}: closes outside {lo}-{hi} for {contract[0]} (e.g. {bad[:3]}). "
+            "Wrong product? RBOB gasoline is NYMEX:RB<month><year> in $/gallon; "
+            "SHFE:RB... is Shanghai steel rebar.")
+
+
 def load_dir(path: str) -> Dict[Contract, DailySeries]:
     out = {}
     for name in sorted(os.listdir(path)):
         c = contract_from_filename(name)
         if c and name.lower().endswith(".csv"):
-            out[c] = read_closes(os.path.join(path, name))
+            series = read_closes(os.path.join(path, name))
+            check_plausible(c, series, name)
+            out[c] = series
     return out
 
 

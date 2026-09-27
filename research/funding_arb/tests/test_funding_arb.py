@@ -1134,3 +1134,13 @@ def test_trade_exits_on_or_before_the_hold_and_never_reads_past_it():
     s = {_date(2025, 1, 21): 10.0, _date(2025, 4, 18): 12.0, _date(2025, 4, 22): 99.0}
     entry, v0, exit_, v1 = trade(s, 2025, (1, 21), 90)  # target exit Apr 21
     assert (entry, exit_, v1 - v0) == (_date(2025, 1, 21), _date(2025, 4, 18), 2.0)
+
+
+def test_shanghai_steel_rebar_is_not_read_as_rbob_gasoline():
+    from research.funding_arb.tv_crack import check_plausible
+    rebar = {_date(2015, 1, 21): 2021.0}
+    with pytest.raises(ValueError, match="steel rebar"):
+        check_plausible(("RB", "M", 2015), rebar, "SHFE_DL_RBM2015, 1D.csv")
+    with pytest.raises(ValueError):  # renamed file: the price level still gives it away
+        check_plausible(("RB", "M", 2015), rebar, "RBM2015.csv")
+    check_plausible(("RB", "M", 2015), {_date(2015, 1, 21): 1.45}, "NYMEX_DL_RBM2015, 1D.csv")
