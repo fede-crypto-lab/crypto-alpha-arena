@@ -600,6 +600,49 @@ reggono anche lì, c'è una strategia. Se crollano, la stagionalità era già ne
 
 ---
 
+## 11-quinquies. SeasonAlgo (demo, solo mais) — lettura della schermata
+
+Dati dalla schermata dell'utente (Strategies → Search, ingresso settembre 2026,
+History 15 anni, finestre 3 e 6 mesi): **45 righe, tutte spread calendario sul
+mais (ZC)**, win 80-100%. Il demo gratuito copre solo il mais.
+
+- **45 righe ≠ 45 opportunità.** Sono ~5 trade distinti (Z26-H27, Z26-K27,
+  Z26-N27, H27-K27, butterfly H27/K27/N27 e Z26/N27/Z27) ripetuti con date di
+  ingresso/uscita spostate di pochi giorni. Il butterfly H27-2K27+N27 compare 8 volte.
+- **Win% con 15 anni, e cosa darebbe il caso** (moneta 50/50, prima di ogni
+  correlazione fra combinazioni):
+
+  | anni vinti | Wilson 95% | P(≥k) a caso | attesi a caso ogni 100k combinazioni |
+  |---|---|---|---|
+  | 12/15 (80%) | 55-93% | 1.76% | ~1.760 |
+  | 13/15 (87%) | 62-96% | 0.37% | ~370 |
+  | 14/15 (93%) | 70-99% | 0.049% | ~49 |
+  | 15/15 (100%) | 80-100% | 0.003% | ~3 |
+
+  Uno scanner su spread × giorno d'ingresso × durata supera facilmente 100k
+  combinazioni: una lista così si ottiene **anche senza edge**. Il Win% mostrato è
+  in-sample; il test che conta è quello di §11-quater (scegli coi 15 anni
+  precedenti, verifica sull'anno dopo). Sugli spot EIA la caduta è stata 83% → 64%.
+- **Costi (stima, da verificare sul fill):** 1 tick ZC = 0,25¢ = $12,50;
+  IBKR ~$2,5 per contratto per lato. Spread a 2 gambe ~$22 a giro → mangia
+  11-15% del PLØ su Z26-H27/K27/N27 (150-207 $), **45% su H27-K27** (50 $).
+  Butterfly a 4 contratti ~$45 → **fino al 65%** del profitto medio: scartare.
+- **C'è un motivo strutturale, non solo statistico.** I trade migliori sono
+  *bull spread* sul mais (long scadenza vicina, short lontana). In una commodity
+  stoccabile lo spread non può andare oltre il **full carry** (stoccaggio +
+  interessi): la perdita è limitata, il guadagno no. Coerente con WorstØ piccolo
+  (−42/−78 $) contro BestØ 220-320 $ e RRR 2,5-5. È la stessa asimmetria di §11-bis.
+- **Capitale:** il margine di uno spread calendario sul mais è una frazione di
+  quello del contratto secco (credito intra-commodity CME). È la strada più
+  compatibile con capitali piccoli fra quelle viste. Cifra esatta da leggere su
+  IBKR, non stimata qui.
+
+Prossimo passo: dati anno per anno dei 3-4 spread a 2 gambe, e prova "a ritroso"
+(Range impostato su un anno passato) per vedere se SeasonAlgo calcola le
+statistiche solo con gli anni precedenti.
+
+---
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di
