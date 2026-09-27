@@ -11,7 +11,19 @@ parameters (some products want SETTLEMENT rather than TRADES, and some have far
 less history than requested).
 
 It reads market data only. It does not import, reference or contain any order
-placement, by design - see CLAUDE.md, "Boundaries".
+placement, by design - see CLAUDE.md, "Boundaries". Enable "Read-Only API" in TWS
+as well, so the boundary is enforced by the broker and not only by this file.
+
+HISTORY LIMIT (verified against IBKR documentation): the API serves expired
+futures only up to TWO YEARS after their expiry, via `includeExpired`. So this
+script yields the live curve plus roughly two to three years of history per
+product. That is enough for a first cross-sectional carry-persistence test; it is
+NOT enough for the 15-year seasonal walk-forward on specific contract spreads,
+which needs another source (Databento carries CME Globex from June 2010).
+
+Run `--probe` first. It checks the connection, refuses a live account, and pulls
+five days of one contract - so a missing market-data permission shows up in
+seconds rather than after twenty minutes of silent empty responses.
 
 Two things it does deliberately:
 
@@ -33,7 +45,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Set, Tuple
 
 logger = logging.getLogger("fetch_ib_curves")
@@ -93,20 +105,49 @@ def append_rows(path: str, rows: List[Row]) -> None:
             })
 
 
-def list_expiries(ib, symbol: str, exchange: str, max_expiries: int) -> List[str]:
-    """Contract months IBKR knows about, nearest first.
+#: IBKR keeps expired futures for two years after expiry; asking further back
+#: returns nothing, and asking exactly at the edge is flaky, so stay just inside.
+EXPIRED_WINDOW_DAYS = 2 * 365 - 10
 
-    `reqContractDetails` on an unqualified Future returns one entry per listed
-    expiry. Deferred months thin out quickly, so only the first few are worth
-    pulling - and the carry only needs two adjacent ones anyway.
+
+def select_expiries(all_expiries: List[str], today: datetime,
+                    max_live: int, window_days: int = EXPIRED_WINDOW_DAYS) -> List[str]:
+    """Expired months still inside IBKR's window, plus the nearest live ones.
+
+    Pure function so it can be tested without a TWS connection. Expiries are
+    'YYYYMMDD' or 'YYYYMM'; the month is what identifies a contract here.
+    """
+    cutoff = (today - timedelta(days=window_days)).strftime("%Y%m%d")
+    now = today.strftime("%Y%m%d")
+    # One date per month: IBKR can list the same month both as 'YYYYMM' and as
+    # a full date, and pulling it twice wastes a paced request. A month-only
+    # code is placed late in the month; the full date wins when both exist.
+    by_month: Dict[str, str] = {}
+    for e in all_expiries:
+        month, date = e[:6], (e if len(e) == 8 else e[:6] + "28")
+        if len(e) == 8 or month not in by_month:
+            by_month[month] = date
+    full = sorted(by_month.values())
+    expired = [e for e in full if cutoff <= e < now]
+    live = [e for e in full if e >= now][:max_live]
+    return [e[:6] for e in expired + live]
+
+
+def list_expiries(ib, symbol: str, exchange: str, max_live: int) -> List[str]:
+    """Contract months to pull: every expired month IBKR still serves, plus the
+    first few live ones.
+
+    The first version of this script asked only for live contracts, which gives
+    at most a couple of years of history on the front and almost none on the
+    past years' contracts - useless for anything seasonal.
     """
     from ib_async import Future
 
-    details = ib.reqContractDetails(Future(symbol=symbol, exchange=exchange))
-    expiries = sorted({d.contract.lastTradeDateOrContractMonth[:6] for d in details})
-    today = datetime.utcnow().strftime("%Y%m")
-    future = [e for e in expiries if e >= today]
-    return future[:max_expiries]
+    details = ib.reqContractDetails(
+        Future(symbol=symbol, exchange=exchange, includeExpired=True))
+    expiries = [d.contract.lastTradeDateOrContractMonth for d in details]
+    return select_expiries(expiries, datetime.now(timezone.utc).replace(tzinfo=None),
+                           max_live)
 
 
 def fetch_contract(ib, symbol: str, exchange: str, expiry: str,
@@ -114,15 +155,24 @@ def fetch_contract(ib, symbol: str, exchange: str, expiry: str,
     from ib_async import Future
 
     contract = Future(symbol=symbol, exchange=exchange,
-                      lastTradeDateOrContractMonth=expiry)
+                      lastTradeDateOrContractMonth=expiry, includeExpired=True)
     qualified = ib.qualifyContracts(contract)
     if not qualified:
         logger.warning("%s %s: could not qualify contract", symbol, expiry)
         return []
+    con = qualified[0]
+
+    # An expired contract has no data after its last trade, and IBKR tends to
+    # return nothing if the request window ends in the future, so anchor the
+    # request at the expiry for those.
+    last = con.lastTradeDateOrContractMonth
+    end: object = ""
+    if len(last) == 8 and last < datetime.now(timezone.utc).strftime("%Y%m%d"):
+        end = datetime.strptime(last, "%Y%m%d").replace(hour=23, tzinfo=timezone.utc)
 
     bars = ib.reqHistoricalData(
-        qualified[0],
-        endDateTime="",
+        con,
+        endDateTime=end,
         durationStr=f"{years} Y",
         barSizeSetting="1 day",
         whatToShow=what_to_show,
@@ -170,15 +220,73 @@ def summarise(path: str) -> None:
     print(" day. A large count there means the basket or the expiry cap is wrong.")
 
 
+def looks_live(accounts: List[str]) -> bool:
+    """IBKR paper accounts are prefixed 'D' (DU..., DF...); live ones 'U...'.
+
+    A second guard behind the port check: TWS can be configured to serve a live
+    session on any port, and the account id is what actually says which it is.
+    """
+    return any(a.startswith("U") for a in accounts)
+
+
+def probe(ib) -> int:
+    """Thirty-second health check before a twenty-minute download."""
+    from ib_async import Future
+
+    print(f"server version: {ib.client.serverVersion()}")
+    accounts = ib.managedAccounts()
+    print(f"accounts: {accounts}")
+    if looks_live(accounts):
+        print("LIVE account detected - refusing. Log TWS into the paper account.",
+              file=sys.stderr)
+        return 2
+
+    details = ib.reqContractDetails(Future(symbol="CL", exchange="NYMEX"))
+    if not details:
+        print("CL: no contract details - check the API connection settings.",
+              file=sys.stderr)
+        return 1
+    front = sorted(details, key=lambda d: d.contract.lastTradeDateOrContractMonth)[0]
+    print(f"CL front: {front.contract.lastTradeDateOrContractMonth} "
+          f"(multiplier {front.contract.multiplier})")
+
+    bars = ib.reqHistoricalData(front.contract, endDateTime="", durationStr="5 D",
+                                barSizeSetting="1 day", whatToShow="TRADES",
+                                useRTH=True, formatDate=1)
+    if not bars:
+        print("CL: contract found but NO bars. This is almost always a missing "
+              "market-data subscription for NYMEX, or the paper account not "
+              "sharing the live account's subscriptions.", file=sys.stderr)
+        return 1
+    print(f"CL: {len(bars)} daily bars, last close {bars[-1].close} on {bars[-1].date}")
+
+    exp = ib.reqContractDetails(Future(symbol="CL", exchange="NYMEX", includeExpired=True))
+    n_expired = len(exp) - len(details)
+    print(f"CL expired contracts visible via includeExpired: {n_expired}")
+
+    # Is there a micro RBOB? Needed to know the minimum size of a gasoline crack.
+    matches = ib.reqMatchingSymbols("RBOB") or []
+    names = sorted({f"{m.contract.symbol} ({m.contract.primaryExchange or m.contract.exchange})"
+                    for m in matches})
+    print(f"symbols matching 'RBOB': {', '.join(names) or 'none'}")
+    print("\nprobe OK - safe to run the full download.")
+    return 0
+
+
 def main(argv=None) -> int:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     p.add_argument("--host", default="127.0.0.1")
     p.add_argument("--port", type=int, default=7497,
                    help="7497 = paper, 7496 = live. Use paper.")
     p.add_argument("--client-id", type=int, default=17)
-    p.add_argument("--years", type=int, default=5)
+    p.add_argument("--years", type=int, default=3,
+                   help="bars requested per contract; IBKR keeps expired "
+                        "futures only 2 years past expiry, so more rarely helps")
     p.add_argument("--max-expiries", type=int, default=4,
-                   help="contract months per symbol, nearest first")
+                   help="LIVE contract months per symbol, nearest first; every "
+                        "expired month IBKR still serves is added on top")
+    p.add_argument("--probe", action="store_true",
+                   help="30-second connection and permissions check, then exit")
     p.add_argument("--what-to-show", default="TRADES",
                    help="TRADES, or SETTLEMENT where a product supports it")
     p.add_argument("--pacing", type=float, default=DEFAULT_PACING_SECONDS)
@@ -208,8 +316,20 @@ def main(argv=None) -> int:
 
     done = load_existing(args.out)
     ib = IB()
-    ib.connect(args.host, args.port, clientId=args.client_id)
+    ib.connect(args.host, args.port, clientId=args.client_id, readonly=True)
     print(f"connected to {args.host}:{args.port}")
+
+    if args.probe:
+        try:
+            return probe(ib)
+        finally:
+            ib.disconnect()
+
+    if looks_live(ib.managedAccounts()):
+        print("LIVE account detected - refusing. Log TWS into the paper account.",
+              file=sys.stderr)
+        ib.disconnect()
+        return 2
 
     try:
         for symbol, exchange in basket:

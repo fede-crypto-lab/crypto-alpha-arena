@@ -285,7 +285,8 @@ attraversato per lato. **Da verificare sui fill reali.**
 | **EIA** `eia.gov/dnav/{pet,ng}/hist_xls/` | ✅ | Contratti 1-4: **WTI 1983-2024** (10.183 oss), **gas 1994-2024** (7.496), heating oil (9.894), benzina (4.609). Fino al **2024-04-05**; l'API v2 richiede una chiave gratuita per i dati correnti |
 | CME settlements | ❌ | Blocca esplicitamente lo scraping e lo vieta nei termini d'uso. **Non aggirare** |
 | Barchart, investing.com | ❌ | 403 |
-| IBKR/TWS | 🔑 | La fonte pulita per un universo ampio: richiede l'account dell'utente |
+| IBKR/TWS | 🔑 | Universo ampio, ma **scaduti solo fino a 2 anni dopo la scadenza** (doc IBKR, `includeExpired`): curva viva + ~2-3 anni. Basta per la persistenza del carry, **non** per il walk-forward stagionale a 15 anni. Solo via TWS/IB Gateway, non app mobile/web |
+| Databento `GLBX.MDP3` | 💳 | CME Globex **dal 6 giugno 2010**, tutte le scadenze, OHLCV giornaliero; a consumo con credito gratuito iniziale. La fonte proposta per gli spread stagionali sui futures (§11-quater). Non ancora usata |
 
 Con l'EIA si fa il test di decomposizione su 4 commodity energetiche subito e
 gratis. Per il test **trasversale** servono 12-20 commodity di settori diversi, e

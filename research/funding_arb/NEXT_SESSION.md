@@ -53,10 +53,17 @@ bassi*, ed è per questo che la soglia qui è più permissiva.
 pip install ib_async          # fork mantenuto di ib_insync; l'originale è fermo
 ```
 
-TWS o IB Gateway in esecuzione, API abilitata:
+TWS o IB Gateway in esecuzione (l'app mobile e il portale web **non** espongono
+l'API), loggato sul conto **paper**, API abilitata:
 `Configure → API → Settings → Enable ActiveX and Socket Clients`, porta 7497
 (paper) o 7496 (live). **Usa la porta paper.** Questa sessione non deve toccare
-il conto reale.
+il conto reale. Spunta anche **Read-Only API**: così il limite "niente ordini" lo
+applica il broker, non solo il codice. Lo script rifiuta la porta 7496 e gli
+account che iniziano per `U` (live); quelli paper iniziano per `D`.
+
+Il conto paper eredita le sottoscrizioni dati del conto live solo se in
+Client Portal → Settings → Paper Trading Account è attiva la condivisione dei
+market data. Se il probe dice "no market data permissions", è quello.
 
 Serve la sottoscrizione ai dati storici per gli exchange interessati (NYMEX,
 COMEX, CBOT per le commodity). Senza, `reqHistoricalData` restituisce un errore
@@ -76,10 +83,24 @@ paniere di future e ne scarica le barre giornaliere. **Non è mai stato eseguito
 contro un TWS reale** — è stato scritto da un container senza accesso a IBKR.
 Trattalo come una bozza da far funzionare, non come codice collaudato.
 
+Prima il probe (30 secondi: connessione, account paper, permessi dati, quanti
+contratti scaduti IBKR conosce):
+
+```bash
+python research/funding_arb/fetch_ib_curves.py --probe --port 7497
+```
+
+Poi il download (decine di minuti per il pacing; riprende da dove si è fermato):
+
 ```bash
 python research/funding_arb/fetch_ib_curves.py \
-    --port 7497 --years 5 --out research/funding_arb/data/ib_curves.csv
+    --port 7497 --years 3 --out research/funding_arb/data/ib_curves.csv
 ```
+
+**Limite verificato sulla documentazione IBKR:** i futures scaduti sono serviti
+solo fino a **2 anni dopo la scadenza** (`includeExpired`). Quindi da IBKR arrivano
+la curva viva + ~2-3 anni di storia. Basta per il passo 3 (persistenza del carry
+trasversale, con molti simboli) ma **non** per il passo 3-bis.
 
 Paniere iniziale, scelto per coprire settori decorrelati e avere curve liquide:
 
@@ -218,6 +239,14 @@ print(format_results([r]))
 for anno, finestra, pnl in r.best_picks: print(anno, finestra, pnl)
 ```
 
+**Fonte dati per questo passo: non IBKR.** Con 2 anni di scaduti non si fa un
+walk-forward con lookback 15. La fonte proposta è **Databento** (dataset CME
+Globex `GLBX.MDP3`, dal 6 giugno 2010, tutte le scadenze, OHLCV giornaliero,
+a consumo con credito gratuito iniziale): RB e CL maggio 2010-2026 sono pochi MB.
+Chiedi all'utente prima di aprire un account o spendere. In alternativa, il
+controllo minimo fattibile con IBKR: i 2 anni disponibili vanno nella stessa
+direzione dello spot EIA? Non è un test, è un sanity check.
+
 Attenzione: una serie per contratto vive ~1 anno, quindi serve concatenare gli
 anni con il contratto dello stesso mese (maggio 2010 per il 2010, maggio 2011 per
 il 2011...), non una serie continua che rolla.
@@ -267,8 +296,9 @@ La **metodologia è agnostica rispetto all'asset**; l'infrastruttura dati no.
 
 Onestà su cosa è ipotesi e cosa è misurato:
 
-- **Quanta storia dà IBKR sui futures.** Non l'ho potuto verificare. Potrebbe
-  essere molto meno di 5 anni su alcuni prodotti, il che ridurrebbe il campione.
+- **Quanta storia dà IBKR sui futures.** Da documentazione: scaduti fino a 2
+  anni dopo la scadenza. Non verificato sul campo: il probe te lo dice in un
+  minuto (conta i contratti scaduti che TWS restituisce per CL).
 - **Se `fetch_ib_curves.py` funziona.** Scritto alla cieca contro la
   documentazione, mai eseguito.
 - **Se i costi calcolati in `MEMORY.md` §8 reggono.** Sono basati sui listini

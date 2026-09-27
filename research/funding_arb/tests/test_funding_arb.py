@@ -1035,3 +1035,32 @@ def test_best_picks_record_which_window_was_chosen():
     assert r.best_picks
     year, (doy, hold, direction), pnl = r.best_picks[-1]
     assert direction in (1, -1) and hold in (30, 60)
+
+
+# --- fetch_ib_curves: pure helpers (no TWS needed) ---------------------------
+
+from datetime import datetime as _dt, timezone as _tz
+
+from research.funding_arb.fetch_ib_curves import looks_live, select_expiries
+
+
+def test_select_expiries_keeps_only_months_inside_the_two_year_window():
+    today = _dt(2026, 9, 27, tzinfo=_tz.utc)
+    months = ["20231219", "20241119", "20250919", "20260820", "20261020",
+              "20261120", "20261218"]
+    picked = select_expiries(months, today, max_live=2)
+    # Cutoff is 2024-10-08: 2023-12 is gone at IBKR, 2024-11 is still served.
+    assert picked == ["202411", "202509", "202608", "202610", "202611"]
+
+
+def test_select_expiries_accepts_month_only_codes_and_deduplicates():
+    today = _dt(2026, 9, 27, tzinfo=_tz.utc)
+    picked = select_expiries(["202610", "20261020", "202611"], today, max_live=5)
+    assert picked == ["202610", "202611"]
+
+
+def test_a_live_account_is_recognised_behind_any_port():
+    assert looks_live(["U1234567"])
+    assert looks_live(["DU111", "U222"])
+    assert not looks_live(["DU1234567"])
+    assert not looks_live([])
