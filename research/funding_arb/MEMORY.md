@@ -755,7 +755,36 @@ degli anni disponibili, medio netto > 0 anche senza il 2020, e le finestre vicin
 (11/01, 01/02; 60 e 90 giorni) con medio netto dello stesso segno. Altrimenti la
 stagionalità spot era già nel prezzo dei futures e il filone stagionale è chiuso.
 
-Unica pista stagionale ancora aperta: il crack benzina (§11-quater, OOS 64% su spot
+### Crack benzina sui FUTURES (TradingView, RBM/CLM 2014-2025): criterio NON superato
+
+`tv_crack.py` su 24 export TradingView (tutti validati: NYMEX, prezzi plausibili,
+gambe allineate giorno per giorno). Long RBM×42 − CLM, 21 gen + 90 giorni, costo
+stimato 30 $:
+
+| anno | P&L $ | anno | P&L $ | anno | P&L $ |
+|---|---|---|---|---|---|
+| 2014 | +1.879 | 2018 | −3.029 | 2022 | **+11.712** |
+| 2015 | +6.106 | 2019 | +6.599 | 2023 | −3.941 |
+| 2016 | −614 | 2020 | −6.048 | 2024 | +2.655 |
+| 2017 | −1.676 | 2021 | +5.158 | 2025 | +494 |
+
+- **Vinti netti 7/12 (58%, Wilson 32-81%)** contro il 70% richiesto → **fallito**.
+  Sugli spot EIA la stessa finestra vinceva 23/26 (88%): la gran parte della
+  stagionalità è già nel prezzo dei futures, come suggeriva il salto
+  marzo→aprile della curva RB (+0,22 $/gal ≈ +9 $/bbl, benzina estiva).
+- Medio netto +1.578 $/anno (senza 2020 +2.274 $), t = 1,07: **non distinguibile
+  da zero**. Mediana +1.186 $. Senza il 2022 (crisi raffinazione, +11.712 $) il
+  medio lordo scende a +689 $.
+- Finestre vicine: medio netto positivo in tutte e 6 (da +185 a +2.384 $), vinti
+  6-8/12. Segno stabile, ampiezza piccola rispetto alla dispersione (peggior anno
+  −6.048 $ su un contratto da 1.000 barili).
+- Estensione possibile a 2006-2013 e 2026 (18 file in più). Domanda solo
+  esplorativa (il medio positivo è reale?), non un recupero del criterio: con
+  7/12 servirebbero 8 vittorie su 9 per arrivare al 70%.
+
+**Conclusione: la pista stagionale è chiusa col criterio fissato prima.**
+
+(Storico) pista stagionale che era aperta: il crack benzina (§11-quater, OOS 64% su spot
 EIA), da verificare sui futures RB−CL con lo stesso holdout (tabella anno per anno
 da SeasonAlgo con accesso completo, o Databento).
 
