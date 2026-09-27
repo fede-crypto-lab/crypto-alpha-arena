@@ -726,7 +726,23 @@ cambio di regime. Wilson inferiore degli anni ON 34-43%, sotto il 55% richiesto.
 Con le scorte finali (che leggono il futuro) va peggio, non meglio. 2026 sarebbe ON
 (0,115 contro mediana 0,103), per quel che vale.
 
-Prossimo passo (aggiornato): SeasonAlgo Search con History 30 anni; se esce vuoto, il filone "spread stagionali sul mais" è chiuso.
+### Search con History 30 anni (ingresso settembre 2026): filone mais CHIUSO
+
+6 righe, **2 operazioni distinte, entrambe butterfly** (4 contratti); nessuno
+spread a 2 gambe sopravvive a 30 anni (coerente con l'holdout sopra):
+
+| operazione | win 30a | PLØ | WorstØ | RRR | netto dopo ~32-45 $ di costi |
+|---|---|---|---|---|---|
+| BUY H27−2·K27+N27, ingresso 8-16 set, uscita fine dic/inizio gen | 87-90% | 50-54 $ | −54/−65 $ | 1,9-2,3 | **5-20 $** |
+| SELL N27−2·U27+Z27 (vecchio/nuovo raccolto), ingresso 12 set | 80% | 67-79 $ | −248/−254 $ | 1,1 | 22-47 $, coda −250 $ |
+
+Anche se il 90% fosse reale, una volta l'anno per 5-20 $ netti non vale il rischio
+di esecuzione (1 tick = 12,5 $ = un quarto del lordo). Non serve l'holdout: il
+verdetto non dipende da lui. **Spread stagionali sul mais: nessun candidato.**
+
+Unica pista stagionale ancora aperta: il crack benzina (§11-quater, OOS 64% su spot
+EIA), da verificare sui futures RB−CL con lo stesso holdout (tabella anno per anno
+da SeasonAlgo con accesso completo, o Databento).
 
 (Fatto: tabelle anno per anno dei 3 spread a 2 gambe, vedi sopra. La prova "a
 ritroso" col Range nel passato è superata dal test holdout.)
