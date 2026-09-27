@@ -637,6 +637,28 @@ mais (ZC)**, win 80-100%. Il demo gratuito copre solo il mais.
   compatibile con capitali piccoli fra quelle viste. Cifra esatta da leggere su
   IBKR, non stimata qui.
 
+### Stagione 2026 in corso — tracciamento paper (nessun ordine)
+
+Dai grafici SeasonAlgo (linea nera = 2026; ingressi letti dal grafico, ±0,25¢;
+"ultimo" = valore LAST in legenda, ~25 settembre 2026). 1¢ = 50 $.
+
+| spread | ingresso | livello ingresso | ultimo | già fatto | PLØ storico | quota del PLØ già incassata |
+|---|---|---|---|---|---|---|
+| Z26-H27 | 05-09 | ≈ −15,5 | −13,75 | +1,75¢ = +88 $ | 150 $ (3,0¢) | ~58% |
+| Z26-K27 | 08-09 | ≈ −23,0 | −20,50 | +2,50¢ = +125 $ | 207 $ (4,15¢) | ~60% |
+| Z26-N27 | 05-09 | ≈ −25,25 | −23,25 | +2,00¢ = +100 $ | 177 $ (3,55¢) | ~56% |
+
+- I tre sono **la stessa scommessa** (Dicembre forte contro una scadenza
+  differita): nessuna diversificazione fra loro.
+- Pattern 5 e 15 anni quasi sovrapposti da settembre a novembre (bene: il
+  comportamento non dipende solo dagli anni vecchi). Forma comune: lo spread si
+  indebolisce dalla primavera al minimo del raccolto (fine agosto/inizio
+  settembre), poi recupera verso dicembre.
+- Entrare ora significa partire più lontano dal full carry: meno protezione
+  sul ribasso e metà del movimento medio già passata. Per il 2026 si osserva,
+  non si entra. Verifica all'uscita (16-21 novembre).
+- I grafici mostrano **medie**: non dicono quali anni hanno perso né di quanto.
+
 Prossimo passo: dati anno per anno dei 3-4 spread a 2 gambe, e prova "a ritroso"
 (Range impostato su un anno passato) per vedere se SeasonAlgo calcola le
 statistiche solo con gli anni precedenti.
