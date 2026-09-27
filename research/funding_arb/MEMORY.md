@@ -700,9 +700,36 @@ col criterio holdout ≥60% e netto > 0. Dic/Lug e Dic/Mag sono la stessa scomme
 due conferme non indipendenti dello stesso fatto, cioè che la scommessa "Dicembre
 forte dopo il raccolto" ha pagato dal 2011 e non prima.
 
-Prossimo passo: dati anno per anno dei 3-4 spread a 2 gambe, e prova "a ritroso"
-(Range impostato su un anno passato) per vedere se SeasonAlgo calcola le
-statistiche solo con gli anni precedenti.
+### Dic/Mar (ZCZ-ZCH, long 5 set → 19 nov): 77 anni — terzo scarto
+
+Selezione 2011-2025: 12/15 netti, +128 $ netti. Holdout 1996-2010: **4/15, −12 $**.
+Holdout 1949-2010: 24/62 (39%), −13 $. Mai selezionabile ex ante.
+**Tutti e tre gli spread SeasonAlgo sul mais falliscono il filtro holdout.** Vanno
+bene e male negli stessi decenni ('80 e post-2010 sì; '70, '90, 2000 no).
+
+### Ipotesi "funziona con scorte abbondanti" (USDA PSD) — testata, non regge
+
+Fonte: USDA FAS PSD, `apps.fas.usda.gov/psdonline/downloads/psd_grains_pulses_csv.zip`
+(pubblico, raggiungibile dal container, US corn 1960-2026). Variabile ex ante per
+l'ingresso di settembre dell'anno Y: scorte iniziali MY Y / consumo+export MY Y−1.
+Ipotesi fissata prima di guardare: più scorte → spread Dicembre più forte.
+
+| spread | Spearman holdout 1961-2010 (n=50) | Spearman 1961-2025 | regola "S/U > mediana dei 15 anni prima", 1976-2025: ON / OFF |
+|---|---|---|---|
+| Dic/Mar | +0,26 | −0,02 | 12/20 (+46 $) / 13/30 (+30 $) |
+| Dic/Mag | +0,15 | −0,08 | 13/20 (+89 $) / 14/30 (+38 $) |
+| Dic/Lug | +0,23 | −0,01 | 11/20 (+70 $) / 12/30 (−11 $) |
+
+Segno giusto nell'holdout ma **non significativo** (serve ρ ≳ 0,28 con n=50), e
+dopo il 2010 gli anni OFF sono andati *meglio* degli ON: le scorte non spiegano il
+cambio di regime. Wilson inferiore degli anni ON 34-43%, sotto il 55% richiesto.
+Con le scorte finali (che leggono il futuro) va peggio, non meglio. 2026 sarebbe ON
+(0,115 contro mediana 0,103), per quel che vale.
+
+Prossimo passo (aggiornato): SeasonAlgo Search con History 30 anni; se esce vuoto, il filone "spread stagionali sul mais" è chiuso.
+
+(Fatto: tabelle anno per anno dei 3 spread a 2 gambe, vedi sopra. La prova "a
+ritroso" col Range nel passato è superata dal test holdout.)
 
 ---
 
