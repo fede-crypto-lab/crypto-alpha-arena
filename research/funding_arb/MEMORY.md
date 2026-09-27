@@ -686,6 +686,20 @@ analizzata con `seasonal_holdout.py`, costo 22,5 $ a giro. "Vinto" = positivo
   ultimi 15 anni, verifica sui 15 prima. Criterio proposto: holdout con vittorie
   nette ≥ 60% **e** medio netto > 0, altrimenti scartare.
 
+### Dic/Mag (ZCZ-ZCK, long 8 set → 21 nov): 79 anni — stesso verdetto, un po' meno netto
+
+| campione | anni | vinti netti | Wilson 95% | medio lordo | medio netto |
+|---|---|---|---|---|---|
+| selezione 2011-2025 | 15 | 12/15 (80%) | 55-93% | +208 $ | +185 $ |
+| 1996-2010 (holdout) | 15 | 6/15 (40%) | 20-64% | +16 $ | −7 $ |
+| 1947-2010 (holdout) | 64 | 26/64 (41%) | 29-53% | +13 $ | −10 $ |
+
+Decenni (netti): '40 1/3, '50 5/10, '60 4/10, '70 2/10, '80 6/10, '90 4/10,
+2000 4/10, 2010 7/10, 2020 5/6. Mai selezionabile ex ante (0 anni). **Scartato**
+col criterio holdout ≥60% e netto > 0. Dic/Lug e Dic/Mag sono la stessa scommessa:
+due conferme non indipendenti dello stesso fatto, cioè che la scommessa "Dicembre
+forte dopo il raccolto" ha pagato dal 2011 e non prima.
+
 Prossimo passo: dati anno per anno dei 3-4 spread a 2 gambe, e prova "a ritroso"
 (Range impostato su un anno passato) per vedere se SeasonAlgo calcola le
 statistiche solo con gli anni precedenti.
