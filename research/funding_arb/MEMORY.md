@@ -286,7 +286,9 @@ attraversato per lato. **Da verificare sui fill reali.**
 | CME settlements | ❌ | Blocca esplicitamente lo scraping e lo vieta nei termini d'uso. **Non aggirare** |
 | Barchart, investing.com | ❌ | 403 |
 | IBKR/TWS | 🔑 | Universo ampio, ma **scaduti solo fino a 2 anni dopo la scadenza** (doc IBKR, `includeExpired`): curva viva + ~2-3 anni. Basta per la persistenza del carry, **non** per il walk-forward stagionale a 15 anni. Solo via TWS/IB Gateway, non app mobile/web |
-| Databento `GLBX.MDP3` | 💳 | CME Globex **dal 6 giugno 2010**, tutte le scadenze, OHLCV giornaliero; a consumo con credito gratuito iniziale. La fonte proposta per gli spread stagionali sui futures (§11-quater). Non ancora usata |
+| Databento `GLBX.MDP3` | 💳 | CME Globex **dal 6 giugno 2010**, tutte le scadenze, OHLCV giornaliero; a consumo, **125 $ di credito gratuito** ai nuovi account. `hist.databento.com` **raggiungibile dal container** (401 senza chiave). Pacchetto `databento` su PyPI. Scaricatore: `fetch_databento.py` (stima costo gratis, scarica solo con `--confirm`, tetto `--max-usd`) |
+| Databento `IFUS.IMPACT` | 💳 | ICE US (cacao, caffè, zucchero, cotone, succo d'arancia) **solo dal 23-12-2018**: troppo corto per il walk-forward stagionale |
+| TradingView | ✋ | Contratti scaduti NYMEX disponibili sul piano dell'utente, ma **solo export manuale** (nessuna API ufficiale; gli scraper violano i termini). Usato per il crack RB-CL 2014-2025 |
 
 Con l'EIA si fa il test di decomposizione su 4 commodity energetiche subito e
 gratis. Per il test **trasversale** servono 12-20 commodity di settori diversi, e
@@ -792,6 +794,27 @@ da SeasonAlgo con accesso completo, o Databento).
 ritroso" col Range nel passato è superata dal test holdout.)
 
 ---
+
+## 11-sexies. Scan di tutti gli spread CME: criterio fissato PRIMA dei dati
+
+`seasonal_scan.py` su dati Databento (`fetch_databento.py`): 21 prodotti CME
+(energia, metalli, grani, bestiame), spread calendario (stesso prodotto, fino a
+12 mesi di distanza) e inter-commodity (stesso mese, 1:1 in dollari). ~400
+finestre per spread (ingresso 35-330 giorni prima della scadenza, 20-90 giorni),
+lookback 8 cicli, qualifica a ≥ 7/8 vittorie nette. Costi stimati: 2,5 $ per
+contratto per lato + 1 tick per gamba.
+
+Domanda unica, globale: **scegliere la finestra sui cicli passati batte il caso
+sul ciclo dopo?** Criterio:
+- best pick per spread-anno: vittorie nette OOS **≥ baseline + 5 punti** e limite
+  inferiore di Wilson sopra la baseline, **e** medio netto > 0;
+- **in almeno 6 degli ~8 anni di test** i best pick battono la baseline (gli
+  spread dello stesso anno sono correlati: il conteggio per anno è l'unico onesto).
+
+Se fallisce: la stagionalità degli spread CME 2010-2026 è già nei prezzi, filone
+chiuso definitivamente. Se passa: secondo stadio sui singoli spread, ricontrollo
+sui prezzi di settlement, poi paper trading. **Nessuna lista di "spread vincenti"
+va letta prima di questo verdetto.**
 
 ## 12. Cosa manca, in ordine di valore
 

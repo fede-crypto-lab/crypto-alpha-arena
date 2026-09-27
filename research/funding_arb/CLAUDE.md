@@ -18,8 +18,11 @@ in English. Keep that split.
 
 ## What this module is, and is not
 
-It is a **research framework**, not a trading bot. Nothing here places an order,
-holds a key, or talks to an authenticated endpoint. Every data source is public.
+It is a **research framework**, not a trading bot. Nothing here places an order.
+Most data sources are public; the exceptions are read-only market-data APIs
+(Databento, IBKR/TWS in read-only mode) whose keys come from the environment
+(`DATABENTO_API_KEY`) and never from a file in the repository or from chat.
+Paid downloads show their cost first and need an explicit `--confirm`.
 That separation is deliberate and must survive: if a task needs order placement,
 it belongs in a new module, not in this one.
 

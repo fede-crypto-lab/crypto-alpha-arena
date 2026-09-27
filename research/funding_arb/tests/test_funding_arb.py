@@ -1144,3 +1144,92 @@ def test_shanghai_steel_rebar_is_not_read_as_rbob_gasoline():
     with pytest.raises(ValueError):  # renamed file: the price level still gives it away
         check_plausible(("RB", "M", 2015), rebar, "RBM2015.csv")
     check_plausible(("RB", "M", 2015), {_date(2015, 1, 21): 1.45}, "NYMEX_DL_RBM2015, 1D.csv")
+
+
+# --- futures_contracts / seasonal_scan ---------------------------------------
+
+import random as _random
+
+from research.funding_arb.futures_contracts import (
+    check_plausible as _fc_plausible, parse_raw_symbol, read_dir, round_trip_cost, write_rows,
+)
+from research.funding_arb.seasonal_scan import (
+    SpreadDef, build_cycles, calendar_defs, scan, windows,
+)
+
+
+def test_raw_symbol_decade_comes_from_the_trade_date():
+    assert parse_raw_symbol("CLM5", _date(2015, 1, 21)) == ("CL", "M", 2015)
+    assert parse_raw_symbol("CLZ9", _date(2010, 6, 7)) == ("CL", "Z", 2019)   # listed 9y out
+    assert parse_raw_symbol("ZCH1", _date(2010, 12, 1)) == ("ZC", "H", 2011)
+    assert parse_raw_symbol("CLM5-CLN5", _date(2015, 1, 21)) is None          # exchange spread
+    assert parse_raw_symbol("XXM5", _date(2015, 1, 21)) is None               # unknown root
+
+
+def test_corn_in_dollars_instead_of_cents_is_rejected():
+    ok = {i: 450.0 + i for i in range(200)}
+    _fc_plausible("ZC", ok)
+    with pytest.raises(ValueError, match="units"):
+        _fc_plausible("ZC", {i: 4.5 for i in range(200)})
+
+
+def test_spread_cost_counts_both_legs():
+    assert round_trip_cost(["CL", "RB"]) == pytest.approx(2 * 2.5 * 2 + 10.0 + 4.2)
+
+
+def _synthetic(seed, planted=None, years=range(2010, 2027)):
+    """Daily closes for CL M/Z contracts. `planted` adds a move to CL Z minus
+    CL M between two dates each year, the kind of seasonality a scan should find."""
+    rng = _random.Random(seed)
+    data = {}
+    for y in years:
+        for m, exp in (("M", _date(y, 5, 20)), ("Z", _date(y, 11, 20))):
+            d, px, s = exp - _td(days=400), 70.0, {}
+            while d <= exp:
+                if d.weekday() < 5:
+                    px += rng.gauss(0, 0.8)
+                    s[d] = px
+                d += _td(days=1)
+            data[("CL", m, y)] = s
+        if planted:
+            start, end, size = planted
+            for d in data[("CL", "M", y)]:
+                if d >= _date(y, *start):
+                    data[("CL", "M", y)][d] -= size * min(1.0, (d - _date(y, *start)).days / max(1, (_date(y, *end) - _date(y, *start)).days))
+    return data
+
+
+def test_cycles_only_use_days_every_leg_printed():
+    data = {("CL", "M", 2015): {_date(2015, 1, 5): 50.0, _date(2015, 1, 6): 51.0},
+            ("CL", "Z", 2015): {_date(2015, 1, 5): 52.0}}
+    (c,) = build_cycles(SpreadDef("x", (("CL", "M", 0), ("CL", "Z", 0))), data)
+    assert c.values == {_date(2015, 1, 5): (50.0 - 52.0) * 1000}
+    assert c.anchor == _date(2015, 1, 5)   # the leg that stops first bounds the window
+
+
+def test_scan_on_noise_does_not_beat_its_own_baseline():
+    data = _synthetic(7)
+    sd = [d for d in calendar_defs(["CL"]) if d.name == "CLM-CLZ"]
+    res = scan(sd, data, lookback=8, min_wins=7, grid=windows())
+    picks = [b.oos_net for b in res.best_picks]
+    assert res.qualified_oos.n > 0                 # noise still produces "reliable" windows...
+    assert len(picks) == 17 - 8
+    base = res.baseline_oos.wins / res.baseline_oos.n
+    assert sum(x > 0 for x in picks) / len(picks) < base + 0.35   # ...that do not persist
+
+
+def test_scan_finds_a_planted_seasonal_move():
+    # CL M weakens vs CL Z by $15/bbl from Feb 1 to Apr 1, every year: well above
+    # the ~$7 two-month noise of the synthetic legs, so the mechanics are what is tested.
+    data = _synthetic(7, planted=((2, 1), (4, 1), 15.0))
+    sd = [d for d in calendar_defs(["CL"]) if d.name == "CLM-CLZ"]
+    res = scan(sd, data, lookback=8, min_wins=7, grid=windows())
+    wins = sum(b.oos_net > 0 for b in res.best_picks)
+    assert wins >= 8 and all(b.window[2] == -1 for b in res.best_picks)   # short M-Z
+
+
+def test_databento_rows_round_trip_through_storage(tmp_path):
+    rows = [(_date(2015, 1, 21), ("CL", "M", 2015), 48.5, 1000.0),
+            (_date(2015, 1, 22), ("CL", "M", 2015), 47.9, 900.0)]
+    write_rows(str(tmp_path / "CL.csv.gz"), rows)
+    assert read_dir(str(tmp_path)) == {("CL", "M", 2015): {_date(2015, 1, 21): 48.5, _date(2015, 1, 22): 47.9}}
