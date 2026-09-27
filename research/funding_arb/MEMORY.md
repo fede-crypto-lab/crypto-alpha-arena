@@ -740,6 +740,21 @@ Anche se il 90% fosse reale, una volta l'anno per 5-20 $ netti non vale il risch
 di esecuzione (1 tick = 12,5 $ = un quarto del lordo). Non serve l'holdout: il
 verdetto non dipende da lui. **Spread stagionali sul mais: nessun candidato.**
 
+Ultimo controllo, Mar/Mag (ZCH-ZCK, long 18 set → 25 ott, 77 anni): selezione
+10/15 netti, +41 $; holdout 1996-2010 **5/15, −31 $**; 1950-2010 17/62 (27%), −29 $.
+Anni '60 0/10, '70 1/10. PLØ 63 $ lordi: anche se fosse vero, i costi ne mangiano
+un terzo. Scartato.
+
+### Crack benzina sui futures: criterio fissato PRIMA di vedere i dati
+
+Dati: export manuali da TradingView (Export chart data, giornaliero, contratti
+scaduti RBM/CLM per anno), letti da `tv_crack.py`. Finestra fissa: long RB×42−CL
+giugno, 21 gennaio + 90 giorni (scelta sugli spot EIA, quindi ogni anno futures è
+fuori campione). Costo stimato 30 $ a giro. **Passa se:** vittorie nette ≥ 70%
+degli anni disponibili, medio netto > 0 anche senza il 2020, e le finestre vicine
+(11/01, 01/02; 60 e 90 giorni) con medio netto dello stesso segno. Altrimenti la
+stagionalità spot era già nel prezzo dei futures e il filone stagionale è chiuso.
+
 Unica pista stagionale ancora aperta: il crack benzina (§11-quater, OOS 64% su spot
 EIA), da verificare sui futures RB−CL con lo stesso holdout (tabella anno per anno
 da SeasonAlgo con accesso completo, o Databento).

@@ -1100,3 +1100,37 @@ def test_would_have_qualified_uses_only_prior_years():
     # First selectable year needs four winners in the five before it: 1999 is
     # preceded by 1995-1998 (4 wins) and 1994 (loss).
     assert [r.year for r in q] == [1999, 2000]
+
+
+# --- tv_crack: TradingView exports -------------------------------------------
+
+
+from research.funding_arb.tv_crack import (
+    contract_from_filename, crack_series, trade, trading_date,
+)
+
+
+def test_contract_is_read_from_tradingview_file_name():
+    assert contract_from_filename("NYMEX_DL_RBM2019, 1D_1a2b3.csv") == ("RB", "M", 2019)
+    assert contract_from_filename("CLM2024.csv") == ("CL", "M", 2024)
+    assert contract_from_filename("ES1!, 1D.csv") is None
+
+
+def test_daily_bar_date_is_the_session_date_under_both_stamp_conventions():
+    # Exchange midnight and the 17:00 Chicago session open the evening before
+    # must both land on the same trading day, or the two legs misalign.
+    assert trading_date("2025-01-21T00:00:00-06:00") == _date(2025, 1, 21)
+    assert trading_date("2025-01-20T17:00:00-06:00") == _date(2025, 1, 21)
+    assert trading_date("1737439200") == _date(2025, 1, 21)  # 06:00 UTC
+
+
+def test_crack_uses_only_days_both_legs_printed_and_converts_gallons():
+    rb = {_date(2025, 1, 21): 2.00, _date(2025, 1, 22): 2.10}
+    cl = {_date(2025, 1, 21): 70.0}
+    assert crack_series(rb, cl) == {_date(2025, 1, 21): 2.00 * 42 - 70.0}
+
+
+def test_trade_exits_on_or_before_the_hold_and_never_reads_past_it():
+    s = {_date(2025, 1, 21): 10.0, _date(2025, 4, 18): 12.0, _date(2025, 4, 22): 99.0}
+    entry, v0, exit_, v1 = trade(s, 2025, (1, 21), 90)  # target exit Apr 21
+    assert (entry, exit_, v1 - v0) == (_date(2025, 1, 21), _date(2025, 4, 18), 2.0)
