@@ -659,6 +659,33 @@ Dai grafici SeasonAlgo (linea nera = 2026; ingressi letti dal grafico, ±0,25¢;
   non si entra. Verifica all'uscita (16-21 novembre).
 - I grafici mostrano **medie**: non dicono quali anni hanno perso né di quanto.
 
+### Dic/Lug (ZCZ-ZCN, long 5 set → 16 nov): 72 anni — il vantaggio c'è solo negli anni usati per sceglierlo
+
+Tabella anno per anno da SeasonAlgo (`multi-analyze/backtest/ZCZ26-ZCN27/BUY/2026-09-05/2026-11-16`),
+analizzata con `seasonal_holdout.py`, costo 22,5 $ a giro. "Vinto" = positivo
+**dopo** i costi (SeasonAlgo conta come vinto anche il 2012 a 0 $ e il 2014/2018 a +12,5 $).
+
+| campione | anni | vinti netti | Wilson 95% | medio lordo | medio netto |
+|---|---|---|---|---|---|
+| selezione SeasonAlgo 2011-2025 | 15 | 10/15 (67%) | 42-85% | +178 $ | +155 $ |
+| 15 anni prima, 1996-2010 (mai visti dallo scanner) | 15 | 4/15 (27%) | 11-52% | −43 $ | −66 $ |
+| tutti i 57 anni prima, 1954-2010 | 57 | 23/57 (40%) | 29-53% | −18 $ | −41 $ |
+| tutti i 72 anni | 72 | — | — | +22 $ | **≈ 0 $** |
+
+- Per decennio (netti): '50 3/6, '60 5/10, '70 3/10, '80 6/10, '90 4/10,
+  2000 2/10, 2010 5/10, 2020 5/6. Il grafico cumulativo di SeasonAlgo è piatto o
+  in calo dal 1954 al ~2011 e sale solo dopo.
+- **In nessun anno** i 15 anni precedenti mostravano ≥80% di vittorie nette:
+  questa finestra non sarebbe mai stata selezionabile prima di oggi.
+- Due letture: (a) selezione — lo scanner ha trovato le date che calzano gli
+  ultimi 15 anni; (b) cambio di regime dopo il 2010. Il test non le distingue;
+  la (a) è quella attesa di default (§11-quater: spot EIA 83% → 64%).
+- Profondità del contango all'ingresso vs profitto: correlazione −0,23 dal 1985
+  (debole; più contango = un po' meglio, come vuole la teoria del full carry).
+- **Il test "holdout all'indietro" si fa gratis su SeasonAlgo**: selezione sugli
+  ultimi 15 anni, verifica sui 15 prima. Criterio proposto: holdout con vittorie
+  nette ≥ 60% **e** medio netto > 0, altrimenti scartare.
+
 Prossimo passo: dati anno per anno dei 3-4 spread a 2 gambe, e prova "a ritroso"
 (Range impostato su un anno passato) per vedere se SeasonAlgo calcola le
 statistiche solo con gli anni precedenti.

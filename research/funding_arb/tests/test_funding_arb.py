@@ -1064,3 +1064,39 @@ def test_a_live_account_is_recognised_behind_any_port():
     assert looks_live(["DU111", "U222"])
     assert not looks_live(["DU1234567"])
     assert not looks_live([])
+
+
+# --- seasonal_holdout: SeasonAlgo per-year tables ----------------------------
+
+from research.funding_arb.seasonal_holdout import (
+    YearResult, block, parse_table, would_have_qualified,
+)
+
+_PASTED = """Years#\tWin%\tWin#
+15\t87%\t13
+Year\tEnter date\tEnter price\tExit date\tExit price\tPoints\tProfit\tDays#
+2025\t2025-09-05\t-35.50\t2025-11-14\t-28.00\t7.50\t375.00\t71
+2023\t2023-09-05\t-26.75\t2023-11-16\t-36.75\t-10.00\t-500.00\t73
+2012\t2012-09-05\t11.75\t2012-11-16\t11.75\t0.00\t0.00\t73
+"""
+
+
+def test_parse_table_reads_year_rows_only_and_sorts_them():
+    rows = parse_table(_PASTED)
+    assert [r.year for r in rows] == [2012, 2023, 2025]
+    assert rows[1] == YearResult(2023, -26.75, -500.0)
+    assert rows[0].enter_price == 11.75
+
+
+def test_a_flat_or_tiny_year_is_not_a_win_after_costs():
+    rows = [YearResult(2012, 0, 0.0), YearResult(2014, 0, 12.5), YearResult(2015, 0, 275.0)]
+    assert block("x", rows, cost=22.5).wins == 1
+
+
+def test_would_have_qualified_uses_only_prior_years():
+    losing = [YearResult(1990 + i, 0, -100.0) for i in range(5)]
+    winning = [YearResult(1995 + i, 0, 300.0) for i in range(6)]
+    q = would_have_qualified(losing + winning, lookback=5, threshold=0.8, cost=0)
+    # First selectable year needs four winners in the five before it: 1999 is
+    # preceded by 1995-1998 (4 wins) and 1994 (loss).
+    assert [r.year for r in q] == [1999, 2000]

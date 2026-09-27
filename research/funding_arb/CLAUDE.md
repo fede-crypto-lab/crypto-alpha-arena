@@ -81,7 +81,7 @@ coins from the universe mid-load and the run stops being reproducible).
 ## Commands
 
 ```bash
-pytest research/funding_arb/tests/ -q            # 68 tests, all must pass
+pytest research/funding_arb/tests/ -q            # all must pass
 
 python -m research.funding_arb.run --persistence --days 1095    # falsification test
 python -m research.funding_arb.run --portfolio --days 540 \
