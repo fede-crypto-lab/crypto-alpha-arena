@@ -1213,7 +1213,9 @@ def test_scan_on_noise_does_not_beat_its_own_baseline():
     res = scan(sd, data, lookback=8, min_wins=7, grid=windows())
     picks = [b.oos_net for b in res.best_picks]
     assert res.qualified_oos.n > 0                 # noise still produces "reliable" windows...
-    assert len(picks) == 17 - 8
+    # 17 synthetic cycles; the last ends on the final day of data, so it counts
+    # as still trading and is dropped: 16 cycles, 8 of them test years.
+    assert len(picks) == 16 - 8
     base = res.baseline_oos.wins / res.baseline_oos.n
     assert sum(x > 0 for x in picks) / len(picks) < base + 0.35   # ...that do not persist
 
@@ -1233,3 +1235,42 @@ def test_databento_rows_round_trip_through_storage(tmp_path):
             (_date(2015, 1, 22), ("CL", "M", 2015), 47.9, 900.0)]
     write_rows(str(tmp_path / "CL.csv.gz"), rows)
     assert read_dir(str(tmp_path)) == {("CL", "M", 2015): {_date(2015, 1, 21): 48.5, _date(2015, 1, 22): 47.9}}
+
+
+def test_contracts_still_trading_are_not_cycles():
+    # Dec 2026 still trades on the last day of data: its last print is not its
+    # expiry, so it must not become a cycle anchored on "today".
+    data = {("CL", "M", 2026): {_date(2026, 5, 19): 60.0, _date(2026, 5, 18): 61.0},
+            ("CL", "Z", 2026): {_date(2026, 5, 18): 62.0, _date(2026, 9, 29): 63.0}}
+    sd = SpreadDef("x", (("CL", "M", 0), ("CL", "Z", 0)))
+    assert build_cycles(sd, data, as_of=_date(2026, 9, 29)) == []
+    assert len(build_cycles(sd, data)) == 1
+
+
+def test_a_later_contract_reusing_the_symbol_is_cut_from_the_tail():
+    from research.funding_arb.futures_contracts import drop_stragglers
+    # CL June 2019 trades daily into May 20, then two June-2029 prints appear
+    # under the same one-digit symbol a month later.
+    s = {_date(2019, 5, 20) - _td(days=i): 60.0 for i in range(30)}
+    s.update({_date(2019, 6, 20): 54.1, _date(2019, 7, 17): 54.55})
+    out = drop_stragglers(s)
+    assert max(out) == _date(2019, 5, 20) and len(out) == 30
+    # Gaps early in a contract's life are normal thin trading and are kept.
+    early = {_date(2018, 1, 5): 1.0, _date(2018, 3, 1): 1.0, **{_date(2019, 5, 1) + _td(days=i): 1.0 for i in range(10)}}
+    assert drop_stragglers(early) == early
+
+
+def test_two_digit_year_symbols_are_requested():
+    from research.funding_arb.fetch_databento import outright_symbols
+    syms = outright_symbols("NG", 2026)
+    assert "NGZ6" in syms and "NGZ26" in syms and "NGF30" in syms
+
+
+def test_a_series_that_stops_far_from_its_delivery_month_is_not_an_expired_cycle():
+    from research.funding_arb.seasonal_scan import ends_at_expiry
+    cl_june = {_date(2019, 5, 20) - _td(days=i): 1.0 for i in range(100)}
+    assert ends_at_expiry(("CL", "M", 2019), cl_june)          # CL stops the month before
+    gold_june = {_date(2019, 6, 26) - _td(days=i): 1.0 for i in range(100)}
+    assert ends_at_expiry(("GC", "M", 2019), gold_june)        # gold trades into the month
+    stray_2028 = {_date(2020, 3, 2) - _td(days=i): 1.0 for i in range(3)}
+    assert not ends_at_expiry(("CL", "F", 2028), stray_2028)   # a far contract gone quiet

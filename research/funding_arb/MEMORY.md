@@ -821,6 +821,43 @@ chiuso definitivamente. Se passa: secondo stadio sui singoli spread, ricontrollo
 sui prezzi di settlement, poi paper trading. **Nessuna lista di "spread vincenti"
 va letta prima di questo verdetto.**
 
+### 11-sexies — RISULTATO (dati Databento scaricati 30-09-2026, ~10,20 $ di credito)
+
+21 prodotti, 2.915 contratti, 2010-06 → 2026-09. Pulizia necessaria e testata:
+simboli a una cifra riusati dopo 10 anni (CLM9 = giugno 2019 e poi giugno 2029:
+2 scambi spuri nella serie 2019), NG passato a simboli a due cifre da maggio 2025
+(senza, la storia NG finiva lì in silenzio), contratti ancora vivi esclusi,
+serie che non finiscono vicino al mese di consegna escluse.
+
+**Criterio globale (fissato prima): FALLITO.**
+
+| universo | spread | baseline | best pick OOS | medio netto | anni > baseline |
+|---|---|---|---|---|---|
+| tutti | 3.060 | 48,7% | 51,0% [50,2-51,7] (+2,3 pt) | **−77 $** | 4/9 |
+| calendario (stesso prodotto) | 1.587 | 47,7% | **53,9%** [52,8-54,9] (+6,2 pt) | **+194 $** | **7/9** |
+| inter-commodity (1:1 in $) | 1.473 | 49,7% | 48,2% (−1,5 pt) | −342 $ | 3/9 |
+
+La divisione calendario / inter-commodity è **post-hoc** (non era nel criterio).
+Robustezza del sottogruppo calendario, tutta positiva:
+- costi ×2: +8,2 pt, +174 $, 7/9 anni; lookback 6: +5,2/+5,9 pt, 9/11 anni;
+  lookback 10: +4,6/+5,2 pt, +198/+291 $, 5/7 anni;
+- per settore: energia +5,0 pt (+269 $), metalli +9,0 (+133 $, 9/9 anni),
+  grani +5,3 (+86 $), bestiame +7,8 (+183 $).
+- **Non è solo carry**: finestra fissa (150 gg prima della scadenza, 90 gg) con
+  la sola direzione dal passato → 50,2%, +101 $, mediana 2 $. La scelta stagionale
+  aggiunge ~+3,7 pt e ~+90 $.
+- Direzione scelta: 2/3 short spread (front debole contro back).
+
+**Il problema è il rischio, non il segno**: per trade media +194 $, deviazione
+standard 2.527 $, p1 −6.010 $, **peggiore −32.925 $**, migliore +28.021 $.
+Sharpe per trade ~0,08: serve un portafoglio largo per vedere la media, e le
+code distruggono un conto piccolo senza dimensionamento e stop.
+
+Prossimo passo onesto (la scoperta è post-hoc, quindi va confermata su dati
+MAI visti): stesso test sui calendari 1990-2009 da un'altra fonte (Norgate/CSI),
+oppure paper trading in avanti; poi studio di dimensionamento/stop e margini
+reali IBKR per spread calendario.
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di

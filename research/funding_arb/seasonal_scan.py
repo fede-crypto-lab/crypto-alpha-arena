@@ -100,20 +100,47 @@ def inter_defs(roots: Sequence[str]) -> List[SpreadDef]:
     return out
 
 
-def build_cycles(sd: SpreadDef, data: Dict[ContractKey, DailySeries]) -> List[Cycle]:
-    """One cycle per front-leg delivery year where every leg has data. Values
-    exist only on days all legs printed: a forward-filled leg is a fake spread."""
+#: A leg whose last print is this close to the end of the data is still trading:
+#: its last print is today, not its expiry, and windows anchored on it would
+#: sit in the wrong place in the contract's life.
+LIVE_MARGIN_DAYS = 10
+
+
+def ends_at_expiry(key: ContractKey, s: DailySeries) -> bool:
+    """Does the series stop where this contract's life ends?
+
+    Every product here stops trading between ~2 months before its delivery
+    month (Brent: last business day of the second preceding month) and the end
+    of the delivery month (gold, cattle). A series that stops elsewhere is a
+    far-dated contract's stray prints filed under a reused symbol (they showed
+    up as "expired" 2028 and 2030 cycles in the first full scan) or a truncated
+    history; either would anchor windows at the wrong point in the contract's life.
+    """
+    _, month, year = key
+    first = date(year, MONTH_CODES.index(month) + 1, 1)
+    end_of_month = (first.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+    return first - timedelta(days=75) <= max(s) <= end_of_month + timedelta(days=3)
+
+
+def build_cycles(sd: SpreadDef, data: Dict[ContractKey, DailySeries],
+                 as_of: Optional[date] = None) -> List[Cycle]:
+    """One cycle per front-leg delivery year where every leg has data and has
+    expired by `as_of`. Values exist only on days all legs printed: a
+    forward-filled leg is a fake spread."""
     years = sorted({y for (r, m, y) in data if (r, m) == sd.legs[0][:2]})
     cycles = []
     for y in years:
         series = []
         for root, month, yoff in sd.legs:
             s = data.get((root, month, y + yoff))
-            if not s:
+            if not s or (as_of and not ends_at_expiry((root, month, y + yoff), s)
+                         and max(s) <= as_of - timedelta(days=LIVE_MARGIN_DAYS)):
                 break
             series.append((root, s))
         else:
             front = series[0][1]
+            if as_of and any(max(s) > as_of - timedelta(days=LIVE_MARGIN_DAYS) for _, s in series):
+                continue
             # The window must close before the FIRST leg stops trading: for
             # inter-commodity pairs that is not always the front (CL expires
             # about a week before RB of the same month).
@@ -192,8 +219,9 @@ class ScanResult:
 def scan(defs: Sequence[SpreadDef], data: Dict[ContractKey, DailySeries],
          lookback: int, min_wins: int, grid: Sequence[Window]) -> ScanResult:
     res = ScanResult(windows_per_spread=len(grid))
+    as_of = max(max(s) for s in data.values())
     for sd in defs:
-        cycles = build_cycles(sd, data)
+        cycles = build_cycles(sd, data, as_of)
         if len(cycles) <= lookback:
             continue
         res.spreads_tested += 1

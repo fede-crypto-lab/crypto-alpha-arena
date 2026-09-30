@@ -54,8 +54,13 @@ def _client():
     return db.Historical()
 
 
-def outright_symbols(root: str) -> List[str]:
-    """Every raw outright symbol a root can have: 'CLF0' ... 'CLZ9'.
+def outright_symbols(root: str, last_year: int) -> List[str]:
+    """Every raw outright symbol a root can have: 'CLF0' ... 'CLZ9', plus the
+    two-digit form 'CLF20' ... for 2020 onwards.
+
+    CME writes one year digit for the next ten years and two digits beyond.
+    NG switched to two digits for every contract in May 2025: asking only for
+    one digit silently ended the NG history there, with no error (measured).
 
     Asked for by raw symbol rather than by parent ('CL.FUT') because the parent
     also carries every exchange-listed calendar spread and strategy: for CL that
@@ -64,26 +69,29 @@ def outright_symbols(root: str) -> List[str]:
     raw symbols per date, so 'CLM5' maps to June 2015 in 2015 and June 2025 in
     2025.
     """
-    return [f"{root}{m}{d}" for m in MONTH_CODES for d in range(10)]
+    one = [f"{root}{m}{d}" for m in MONTH_CODES for d in range(10)]
+    two = [f"{root}{m}{y % 100:02d}" for m in MONTH_CODES for y in range(2020, last_year + 13)]
+    return one + two
 
 
-def _request(root: str, end: str) -> dict:
-    return dict(dataset=DATASET, symbols=outright_symbols(root), stype_in="raw_symbol",
-                schema=SCHEMA, start=START, end=end)
+def _request(root: str, end: str, start: str = START) -> dict:
+    return dict(dataset=DATASET, symbols=outright_symbols(root, int(end[:4])),
+                stype_in="raw_symbol", schema=SCHEMA, start=start, end=end)
 
 
-def estimate(client, roots: Sequence[str], end: str) -> List[tuple]:
+def estimate(client, roots: Sequence[str], end: str, start: str = START) -> List[tuple]:
     # Each metadata call takes 25-45 s server-side; in parallel the basket
     # takes a couple of minutes instead of half an hour.
     def one(root):
-        kw = _request(root, end)
+        kw = _request(root, end, start)
         return root, client.metadata.get_cost(**kw), client.metadata.get_billable_size(**kw)
     with ThreadPoolExecutor(max_workers=6) as pool:
         return list(pool.map(one, roots))
 
 
-def download(client, root: str, end: str, out_dir: str) -> int:
-    store = client.timeseries.get_range(**_request(root, end))
+def download(client, root: str, end: str, out_dir: str, start: str = START,
+             suffix: str = "") -> int:
+    store = client.timeseries.get_range(**_request(root, end, start))
     df = store.to_df()  # prices as floats, raw symbols mapped (e.g. 'CLM5')
     rows = []
     skipped = 0
@@ -98,7 +106,7 @@ def download(client, root: str, end: str, out_dir: str) -> int:
     for d, key, close, _ in rows:
         by_contract.setdefault(key, {})[d] = close
     check_plausible(root, {i: v for i, v in enumerate(c for _, _, c, _ in rows)}, root)
-    n = write_rows(os.path.join(out_dir, f"{root}.csv.gz"), rows)
+    n = write_rows(os.path.join(out_dir, f"{root}{suffix}.csv.gz"), rows)
     print(f"  {root}: {n} bars over {len(by_contract)} contracts ({skipped} spread/other bars skipped)")
     return n
 
@@ -106,7 +114,10 @@ def download(client, root: str, end: str, out_dir: str) -> int:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--roots", nargs="+", default=sorted(SPECS), help="product roots (default: whole basket)")
+    ap.add_argument("--start", default=START)
     ap.add_argument("--end", default=date.today().isoformat())
+    ap.add_argument("--suffix", default="", help="file name suffix, to add a date range "
+                    "to a root already downloaded (the reader merges every file)")
     ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "data", "databento"))
     ap.add_argument("--confirm", action="store_true", help="actually download (billed)")
     ap.add_argument("--max-usd", type=float, default=DEFAULT_MAX_USD)
@@ -116,18 +127,18 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if unknown:
         sys.exit(f"no spec for {unknown}: add them to futures_contracts.SPECS first")
     client = _client()
-    est = estimate(client, a.roots, a.end)
+    est = estimate(client, a.roots, a.end, a.start)
     total = sum(c for _, c, _ in est)
     for root, cost, size in est:
         print(f"  {root:3s} {size / 1e6:8.2f} MB  ${cost:7.2f}")
-    print(f"total ${total:.2f} for {len(est)} roots, {START} -> {a.end} ({SCHEMA})")
+    print(f"total ${total:.2f} for {len(est)} roots, {a.start} -> {a.end} ({SCHEMA})")
     if not a.confirm:
         print("estimate only - nothing downloaded, nothing billed. Re-run with --confirm.")
         return 0
     if total > a.max_usd:
         sys.exit(f"estimate ${total:.2f} exceeds --max-usd {a.max_usd:.2f}; refusing")
     for root in a.roots:
-        download(client, root, a.end, a.out)
+        download(client, root, a.end, a.out, a.start, a.suffix)
     return 0
 
 

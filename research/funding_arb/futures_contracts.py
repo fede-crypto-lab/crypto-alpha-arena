@@ -114,8 +114,28 @@ def write_rows(path: str, rows: Iterable[Tuple[date, ContractKey, float, float]]
     return n
 
 
+#: Trailing prints this far from the rest of a contract's history belong to a
+#: different contract that inherited the symbol: CME reuses 'CLM9' for June 2029
+#: once June 2019 expires, and a stray June-2029 trade landed in the June-2019
+#: series a month after it expired (measured on CL). Near expiry every contract
+#: here trades daily, so a gap this long before the final prints is never real.
+STRAGGLER_GAP_DAYS = 14
+
+
+def drop_stragglers(series: DailySeries, gap_days: int = STRAGGLER_GAP_DAYS) -> DailySeries:
+    days = sorted(series)
+    cut = len(days)
+    for i in range(len(days) - 1, 0, -1):
+        if (days[i] - days[i - 1]).days > gap_days:
+            cut = i
+        elif i < len(days) - 5:
+            break   # only the tail is inspected; early-life gaps are normal
+    return {d: series[d] for d in days[:cut]}
+
+
 def read_dir(path: str) -> Dict[ContractKey, DailySeries]:
-    """Every *.csv.gz written by `write_rows`, validated per root."""
+    """Every *.csv.gz written by `write_rows`, merged per contract (a root may
+    span several files), stragglers removed, validated per root."""
     out: Dict[ContractKey, DailySeries] = {}
     for name in sorted(os.listdir(path)):
         if not name.endswith(".csv.gz"):
@@ -124,6 +144,7 @@ def read_dir(path: str) -> Dict[ContractKey, DailySeries]:
             for r in csv.DictReader(fh):
                 key = (r["root"], r["month"], int(r["year"]))
                 out.setdefault(key, {})[date.fromisoformat(r["date"])] = float(r["close"])
+    out = {k: drop_stragglers(s) for k, s in out.items()}
     by_root: Dict[str, List[float]] = {}
     for k, s in out.items():
         by_root.setdefault(k[0], []).extend(s.values())
