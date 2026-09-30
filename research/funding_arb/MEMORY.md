@@ -804,6 +804,11 @@ finestre per spread (ingresso 35-330 giorni prima della scadenza, 20-90 giorni),
 lookback 8 cicli, qualifica a ≥ 7/8 vittorie nette. Costi stimati: 2,5 $ per
 contratto per lato + 1 tick per gamba.
 
+**Costo misurato (stima Databento, 2010-06-06 → 2026-09-30, ohlcv-1d, solo contratti
+singoli): 10,05 $ per i 21 prodotti, ~57 MB.** Chiedere per "parent" (`CL.FUT`)
+include anche gli spread quotati in borsa: 7× i dati e il costo (CL 7,69 $ contro
+1,08 $). Per questo il downloader chiede i simboli singoli (`CLF0`…`CLZ9`).
+
 Domanda unica, globale: **scegliere la finestra sui cicli passati batte il caso
 sul ciclo dopo?** Criterio:
 - best pick per spread-anno: vittorie nette OOS **≥ baseline + 5 punti** e limite

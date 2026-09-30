@@ -31,7 +31,9 @@ import sys
 from datetime import date
 from typing import List, Optional, Sequence
 
-from .futures_contracts import SPECS, parse_raw_symbol, write_rows, check_plausible
+from concurrent.futures import ThreadPoolExecutor
+
+from .futures_contracts import MONTH_CODES, SPECS, parse_raw_symbol, write_rows, check_plausible
 
 DATASET = "GLBX.MDP3"
 SCHEMA = "ohlcv-1d"
@@ -52,20 +54,36 @@ def _client():
     return db.Historical()
 
 
+def outright_symbols(root: str) -> List[str]:
+    """Every raw outright symbol a root can have: 'CLF0' ... 'CLZ9'.
+
+    Asked for by raw symbol rather than by parent ('CL.FUT') because the parent
+    also carries every exchange-listed calendar spread and strategy: for CL that
+    is 7x the data and 7x the bill (measured: $7.69 vs $1.08, 2010-2026), none
+    of it used - spreads are rebuilt from the outright legs. Databento resolves
+    raw symbols per date, so 'CLM5' maps to June 2015 in 2015 and June 2025 in
+    2025.
+    """
+    return [f"{root}{m}{d}" for m in MONTH_CODES for d in range(10)]
+
+
+def _request(root: str, end: str) -> dict:
+    return dict(dataset=DATASET, symbols=outright_symbols(root), stype_in="raw_symbol",
+                schema=SCHEMA, start=START, end=end)
+
+
 def estimate(client, roots: Sequence[str], end: str) -> List[tuple]:
-    rows = []
-    for root in roots:
-        kw = dict(dataset=DATASET, symbols=[f"{root}.FUT"], stype_in="parent",
-                  schema=SCHEMA, start=START, end=end)
-        cost = client.metadata.get_cost(**kw)
-        size = client.metadata.get_billable_size(**kw)
-        rows.append((root, cost, size))
-    return rows
+    # Each metadata call takes 25-45 s server-side; in parallel the basket
+    # takes a couple of minutes instead of half an hour.
+    def one(root):
+        kw = _request(root, end)
+        return root, client.metadata.get_cost(**kw), client.metadata.get_billable_size(**kw)
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        return list(pool.map(one, roots))
 
 
 def download(client, root: str, end: str, out_dir: str) -> int:
-    store = client.timeseries.get_range(dataset=DATASET, symbols=[f"{root}.FUT"],
-                                        stype_in="parent", schema=SCHEMA, start=START, end=end)
+    store = client.timeseries.get_range(**_request(root, end))
     df = store.to_df()  # prices as floats, raw symbols mapped (e.g. 'CLM5')
     rows = []
     skipped = 0
@@ -73,7 +91,7 @@ def download(client, root: str, end: str, out_dir: str) -> int:
         d = ts.date()
         key = parse_raw_symbol(str(rec["symbol"]), d)
         if key is None or key[0] != root:
-            skipped += 1   # calendar spreads and other strategies listed under the parent
+            skipped += 1   # anything that is not an outright of this root
             continue
         rows.append((d, key, float(rec["close"]), float(rec["volume"])))
     by_contract = {}
