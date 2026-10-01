@@ -1192,6 +1192,46 @@ scartate (anno "diverso" dal solito) vanno MEGLIO: suggerisce rientro verso la n
 più che continuazione, ma è un'osservazione a posteriori — non adottarla senza un
 test su dati nuovi (paper trading). La regola semplice resta senza filtri.
 
+### Diagnosi delle perdite dei 4 candidati (180/90, settlement, 449 trade, 155 in perdita)
+
+Perdite peggiori: NGH-NGJ ago-nov 2018 **−9.980 $** (squeeze del gas, front +44%),
+GFK-GFQ 2023-24 −2.710 $ (front +17%), ZRN-ZRU 2020 −1.410 $ (COVID), NG 2012/2022,
+GF 2014/2025 (front +16/+23%). **Meccanismo: scarsità improvvisa → la scadenza vicina
+schizza → lo spread va contro chi vende la vicina.** Durante il trade: front in calo
+77% vinte / +343 $; front +0-10% 58% / +54 $; front ≥ +10% **31% / −273 $**.
+Prima dell'ingresso (terzili, descrittivo): spread già alto rispetto agli ultimi 5
+anni (z ≥ 0,76) 56% vinte e **6 delle 10 perdite > 1.000 $**; spread già mosso a
+favore nei 60 giorni prima: 58% e 6 delle 10. Effetti deboli, conteggi piccoli.
+
+Regole di rischio — parametri scelti su ingressi 2011-2018 (totale/DD migliore),
+verificati UNA volta sul 2019-2026; passa se nel 2019-2026 totale/DD migliora e
+il totale non scende più del 20%:
+- S1 stop spread: esci se perdita ≥ k × σ (σ = dev.std variazioni giornaliere dello
+  spread nei 60 giorni prima × √20), k ∈ {1,5; 2; 3};
+- S2 stop scarsità: esci se il front sale ≥ X% dall'ingresso, X ∈ {5; 10; 15};
+- F1 filtro: non entrare se z del livello ≥ soglia, soglia ∈ {0,76; 1,5}.
+Uscita allo settlement del giorno dello stop (in uno squeeze il prezzo reale può
+essere peggiore: limite dichiarato).
+
+**Risultato regole di rischio: nessuna passa.**
+
+| regola (scelta sul 2011-18) | 2011-18: totale / DD / peggiore | 2019-26: totale / DD / peggiore |
+|---|---|---|
+| nessuna | 13.445 / 12.088 / −9.980 $ | **52.232 / 2.882 / −2.710 $** |
+| S1 stop 1,5σ | 16.117 / 4.695 / −1.960 $ | 32.923 / **5.258** / −2.585 $ |
+| S2 front +10% | 16.557 / 5.648 / −2.240 $ | 23.070 / **4.750** / −1.960 $ |
+| F1 z < 0,76 | 17.465 / **1.770** / −1.235 $ | 32.538 / 2.883 / −2.710 $ |
+
+Nel 2011-18 ogni regola sembra ottima perché taglia UN evento (squeeze del gas
+2018, che fa quasi tutto il DD). Nel 2019-26 tutte tagliano il guadagno del 37-56%
+senza ridurre il drawdown (gli stop peggiorano il DD: chiudono in perdita
+operazioni che poi sarebbero rientrate). Le grandi perdite sono **shock rari di
+scarsità**, non prevedibili dai prezzi prima dell'ingresso. Gestione realistica:
+dimensionare le posizioni sul caso peggiore storico (−10.000 $ per uno spread NG
+marzo/aprile), diversificare, ed eventualmente evitare per conoscenza nota a priori
+lo spread gas marzo/aprile ("widowmaker", Amaranth 2006) — decisione da dichiarare
+come scelta di rischio, non come miglioramento statistico.
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di
