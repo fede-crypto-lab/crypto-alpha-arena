@@ -1142,6 +1142,32 @@ Rischio (tutte le coppie mensili, 1 spread ciascuna, 16 anni):
   **Basso rischio, guadagno piccolo.**
 Tappa 2 per GF e ZR: download in corso (lento).
 
+### 11-decies — GF e ZR sui settlement, e portafoglio dei 4 candidati
+
+| | 90/60 | 120/90 | 180/90 | 240/120 | metà 1 / 2 (120/90) |
+|---|---|---|---|---|---|
+| **GF** bovini da ingrasso | 62% +180 $ | 52% +234 $ | 65% +139 $ | 68% +244 $ | +146 / +346 $ ✓ |
+| **ZR** riso | 67% +67 $ | 68% +129 $ | 62% +90 $ | 71% +82 $ | +126 / +132 $ ✓ |
+
+Rischio: GF DD 7.385-15.427 $, peggiore −2.172/−3.335 $, **2024-2025 negativi**
+(possibile declino). ZR DD 3.450-8.360 $, peggiore **−8.040 $ (2020, COVID)**; il riso
+è poco liquido: costi reali > stima.
+
+Portafoglio, 1 spread per coppia, settlement, 2011-2026:
+
+| finestra | combinazione | totale | DD max | totale/DD | anni in perdita | anno peggiore |
+|---|---|---|---|---|---|---|
+| 180/90 | HG+NG+GF+ZR | +65.677 $ | 12.088 $ | **5,4** | 2/16 | −9.748 $ |
+| 180/90 | HG+GF+ZR | +29.057 $ | 4.325 $ | 6,7 | 5/16 | −2.687 $ |
+| 240/120 | HG+NG+GF+ZR | +70.143 $ | 12.572 $ | 5,6 | 2/16 | −8.710 $ |
+| (singoli 180/90) | HG 10,7 · NG 2,9 · GF 1,9 · ZR 2,4 | | | | | |
+
+Correlazioni annuali basse o negative tra prodotti (es. NG-GF −0,06/−0,37, HG-GF
+−0,04/−0,40): la diversificazione raddoppia il rapporto guadagno/drawdown.
+Limiti: finestre scelte tra 4 (tutte positive), costi stimati, NG pesa metà del
+totale e ha il 2022 eccezionale, ~8 spread aperti in contemporanea → capitale da
+verificare con i margini IBKR.
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di
