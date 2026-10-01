@@ -1,3 +1,7 @@
 .cache/
 data/
 *.json.gz
+
+# Public-domain datasets are committed on purpose (see public_data/README.md);
+# the repository-wide *.csv rule is for the trading bot logs.
+!public_data/**/*.csv
