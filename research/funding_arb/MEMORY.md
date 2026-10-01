@@ -1110,6 +1110,38 @@ entrambe le metà RB (+122 $ / +122 $) ma vittorie 54% / 51%. Settlement: GC 12%
 HG 25% / 62%. Effetto assorbito dopo il 2010, come in Irwin-Sanders-Yan. Il
 vantaggio di HG/NG/GF/ZR sta nei mesi PRIMA del roll, non nella settimana del roll.
 
+### 11-decies — Tappa 2 (settlement): NG confermato; due bug di estrazione corretti
+
+Bug trovati e corretti (con test dove possibile):
+- **Simbolo a una cifra riusato dopo 10 anni** anche nei settlement: NG e CL sono
+  quotati oltre 10 anni avanti e i settlement esistono ogni giorno per ogni
+  contratto, quindi "NGH3" dopo marzo 2013 = marzo 2023 si incollava alla serie del
+  2013 (la serie veniva scartata: mancavano i cicli 2013-14). Ora il contratto si
+  risolve **per identificativo di borsa** (`resolve_contract`: due cifre = anno
+  esatto; una cifra = primo anno con quella cifra il cui mese di consegna non era
+  finito all'ultima apparizione). GC e HG non toccati (quotati < 10 anni avanti):
+  conteggi identici.
+- **Timestamp non definito**: Databento usa u64 max; filtravo i64 max → date
+  nell'anno 2554 che facevano sembrare vivi i contratti. Corretto.
+
+Risultati sui settlement (regola fissa, vendi vicina / compra successiva):
+
+| | 90/60 | 120/90 | 180/90 | 240/120 | 120/90 metà 1 / 2 |
+|---|---|---|---|---|---|
+| **NG** | 58% +244 $ | 60% +317 $ | 62% +202 $ | 68% +166 $ | +129 / +525 $ ✓ |
+| **HG** | 58% +20 $ | 59% +57 $ | 67% +89 $ | 65% +110 $ | +37 / +81 $ ✓ |
+| GC | 45% +31 $ | 53% +78 $ | 51% +78 $ | 47% +90 $ | −12 / +177 $ ✗ |
+
+Rischio (tutte le coppie mensili, 1 spread ciascuna, 16 anni):
+- **NG**: 120/90 totale +58.090 $, DD max 10.770 $, peggiore −3.810 $, anni in
+  perdita 4/16 (2022 da solo +25.110 $); 180/90 DD 12.460 $, peggiore −9.980 $;
+  240/120 DD 15.410 $, peggiore −10.110 $ (2021 −12.490 $). Mesi migliori H (marzo,
+  lo spread "widowmaker" marzo/aprile), J, K, M; peggiori V, X, U. **Redditizio ma
+  NON a basso drawdown.**
+- **HG**: 180/90 totale +6.700 $, DD 628 $, peggiore −410 $; 120/90 DD 1.382 $.
+  **Basso rischio, guadagno piccolo.**
+Tappa 2 per GF e ZR: download in corso (lento).
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di

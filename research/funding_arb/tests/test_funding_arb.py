@@ -1349,3 +1349,15 @@ def test_gold_cycles_end_before_the_delivery_month_but_crude_runs_to_expiry():
     (c,) = build_cycles(SpreadDef("c", (("CL", "M", 0), ("CL", "Q", 0))),
                         {("CL", "M", 2020): cl, ("CL", "Q", 2020): cl_back})
     assert c.anchor == _date(2020, 5, 19)
+
+
+def test_a_reused_one_digit_symbol_resolves_per_instrument():
+    from research.funding_arb.futures_contracts import resolve_contract
+    # The instrument last seen in Feb 2013 is March 2013; the one listed as
+    # 'NGH3' after that and still settling in 2026 is March 2033 or 2023.
+    assert resolve_contract({"NGH3"}, _date(2013, 2, 26)) == ("NG", "H", 2013)
+    assert resolve_contract({"NGH3"}, _date(2023, 2, 24)) == ("NG", "H", 2023)
+    assert resolve_contract({"NGH33", "NGH3"}, _date(2026, 9, 29)) == ("NG", "H", 2033)
+    assert resolve_contract({"NGZ6"}, _date(2026, 9, 29)) == ("NG", "Z", 2026)        # still live
+    assert resolve_contract({"CLF0"}, _date(2019, 12, 19)) == ("CL", "F", 2020)      # Jan expires in Dec
+    assert resolve_contract({"CLM5-CLN5"}, _date(2015, 1, 1)) is None

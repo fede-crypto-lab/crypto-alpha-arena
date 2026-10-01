@@ -12,7 +12,7 @@ import gzip
 import os
 import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from typing import Dict, Iterable, List, Optional, Tuple
 
 MONTH_CODES = "FGHJKMNQUVXZ"
@@ -82,6 +82,38 @@ def parse_raw_symbol(symbol: str, seen_on: date) -> Optional[ContractKey]:
     else:
         year = seen_on.year + (int(digits) - seen_on.year) % 10
     return m.group(1), m.group(2), year
+
+
+def resolve_contract(symbols: Iterable[str], last_seen: date) -> Optional[ContractKey]:
+    """Delivery year of ONE exchange instrument, from every raw symbol it was
+    listed under and the last day it was seen.
+
+    CME reuses a one-digit symbol ten years later: once NG March 2013 expired,
+    'NGH3' became NG March 2023. Products listed more than ten years out (NG,
+    CL) settle that new contract every day, so resolving by the date of each
+    print (`parse_raw_symbol`) glues 2023 prices onto the 2013 series (measured
+    on NG settlements). Per instrument the answer is unambiguous: a two-digit
+    symbol gives the year outright; otherwise it is the first year with that
+    last digit whose delivery month had not ended when the instrument was last seen.
+    """
+    one_digit = None
+    for sym in symbols:
+        m = _RAW.match(sym.strip())
+        if not m or m.group(1) not in SPECS:
+            continue
+        if len(m.group(3)) == 2:
+            return m.group(1), m.group(2), 2000 + int(m.group(3))
+        one_digit = (m.group(1), m.group(2), int(m.group(3)))
+    if one_digit is None:
+        return None
+    root, month, digit = one_digit
+    y = last_seen.year - 1
+    while True:
+        first = date(y, MONTH_CODES.index(month) + 1, 1)
+        end = (first.replace(day=28) + timedelta(days=4)).replace(day=1) - timedelta(days=1)
+        if y % 10 == digit and end >= last_seen:
+            return root, month, y
+        y += 1
 
 
 def round_trip_cost(roots: Iterable[str]) -> float:

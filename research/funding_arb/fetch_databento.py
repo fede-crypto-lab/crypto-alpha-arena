@@ -33,7 +33,9 @@ from typing import Dict, List, Optional, Sequence
 
 from concurrent.futures import ThreadPoolExecutor
 
-from .futures_contracts import MONTH_CODES, SPECS, parse_raw_symbol, write_rows, check_plausible
+from .futures_contracts import (
+    MONTH_CODES, SPECS, check_plausible, parse_raw_symbol, resolve_contract, write_rows,
+)
 
 DATASET = "GLBX.MDP3"
 SCHEMA = "ohlcv-1d"
@@ -114,7 +116,11 @@ def download(client, root: str, end: str, out_dir: str, start: str = START,
 #: Databento StatType.SETTLEMENT_PRICE and StatUpdateAction.NEW.
 SETTLEMENT_PRICE = 3
 UPDATE_NEW = 1
-UNDEF_TS = 2 ** 63 - 1
+UNDEF_PRICE = 2 ** 63 - 1
+#: Databento's undefined timestamp is u64 max. Checking i64 max instead let
+#: undefined ts_ref values through as dates in the year 2554, which made every
+#: contract carrying one look alive for five centuries (measured on NG).
+UNDEF_TS = 2 ** 64 - 1
 
 
 def settlements_from_dbn(paths: Sequence[str], root: str) -> List[tuple]:
@@ -131,26 +137,34 @@ def settlements_from_dbn(paths: Sequence[str], root: str) -> List[tuple]:
     import databento as db
     from databento.common.symbology import InstrumentMap
 
-    best: Dict[tuple, tuple] = {}
+    # Per exchange instrument: date -> (ts_recv, price), and every symbol it had.
+    prices: Dict[int, Dict[date, tuple]] = {}
+    symbols: Dict[int, set] = {}
     for path in paths:
         store = db.DBNStore.from_file(path)
         imap = InstrumentMap()
         imap.insert_metadata(store.metadata)
         for r in store:
             if int(r.stat_type) != SETTLEMENT_PRICE or int(r.update_action) != UPDATE_NEW \
-                    or r.ts_ref == UNDEF_TS or r.price >= UNDEF_TS or r.price == 0:
+                    or r.ts_ref >= UNDEF_PRICE or r.price >= UNDEF_PRICE or r.price == 0:
                 # Exactly zero is a placeholder sent for far months with no
                 # settlement (416 of 21,577 GC rows 2010-2014), not a price.
                 continue
             d = _utc_date(r.ts_ref)
-            symbol = imap.resolve(r.instrument_id, d)
-            key = parse_raw_symbol(symbol, d) if symbol else None
-            if key is None or key[0] != root:
-                continue
-            prev = best.get((key, d))
+            sym = imap.resolve(r.instrument_id, d)
+            if sym:
+                symbols.setdefault(r.instrument_id, set()).add(sym)
+            per = prices.setdefault(r.instrument_id, {})
+            prev = per.get(d)
             if prev is None or r.ts_recv >= prev[0]:
-                best[(key, d)] = (r.ts_recv, r.price / 1e9)
-    return [(d, key, px, 0.0) for (key, d), (_, px) in sorted(best.items(), key=lambda kv: kv[0][1])]
+                per[d] = (r.ts_recv, r.price / 1e9)
+    rows = []
+    for iid, per in prices.items():
+        key = resolve_contract(symbols.get(iid, ()), max(per))
+        if key is None or key[0] != root:
+            continue
+        rows.extend((d, key, px, 0.0) for d, (_, px) in per.items())
+    return sorted(rows, key=lambda r: (r[0], r[1]))
 
 
 def _utc_date(ns: int) -> date:
