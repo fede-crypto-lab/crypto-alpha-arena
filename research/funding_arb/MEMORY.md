@@ -858,6 +858,53 @@ MAI visti): stesso test sui calendari 1990-2009 da un'altra fonte (Norgate/CSI),
 oppure paper trading in avanti; poi studio di dimensionamento/stop e margini
 reali IBKR per spread calendario.
 
+## 11-septies. Filtri d'ingresso tecnici sugli spread calendario — piano fissato PRIMA
+
+Decisione dell'utente (01-10-2026): niente dati pre-2010 (i mercati e le
+stagionalità cambiano); migliorare i segnali sui dati che abbiamo.
+
+Universo: i best pick del sottogruppo calendario (§11-sexies: lookback 8, ≥7/8,
+~8.400 operazioni OOS 2018-2026). Le caratteristiche si calcolano sullo spread
+**solo con prezzi precedenti al giorno d'ingresso**, orientate nella direzione
+del trade (positivo = a favore):
+1. momentum 20 gg (variazione / volatilità 20 gg);
+2. distanza dalla media mobile 20 gg (in volatilità);
+3. regime di volatilità: vol 20 gg / mediana vol 120 gg;
+4. livello rispetto agli stessi giorni dei cicli precedenti (z-score: "già
+   andato" o "ancora da fare");
+5. forza del segnale stagionale: t-stat delle 8 vittorie passate;
+6. ingresso con conferma: entrare il primo giorno, entro 10 dalla data
+   stagionale, in cui il momentum 5 gg gira nella direzione del trade.
+
+**Divisione degli anni:** sviluppo = test year 2018-2022; **cassetto = 2023-2026,
+guardato una sola volta** a regola congelata. In sviluppo: terzili per ogni
+caratteristica (soglie calcolate solo sullo sviluppo); si sceglie **una** regola
+(una caratteristica, o al massimo due combinate) solo se i terzili sono monotoni.
+
+**Criterio sul cassetto:** rispetto ai best pick non filtrati dello stesso
+cassetto, medio netto ≥ +25% **e** vittorie ≥ +2 punti **e** meglio in almeno
+3 dei 4 anni. Altrimenti: l'analisi tecnica d'ingresso non aggiunge nulla e si
+resta sulla regola stagionale semplice.
+
+### 11-septies — sviluppo (2018-2022, 4.790 best pick) e regola CONGELATA
+
+Terzili (soglie solo sullo sviluppo); base non filtrata 51,5%, +59 $, t 1,55:
+
+| caratteristica | basso | medio | alto | monotono |
+|---|---|---|---|---|
+| momentum 20 gg | 49,9% / −235 $ | 51,1% / +132 $ | 52,6% / +252 $ | sì |
+| distanza da MA20 | 49,3% / −213 $ | 50,8% / +134 $ | 53,6% / +228 $ | sì |
+| regime di volatilità | 47,8% / −10 $ | 49,5% / +12 $ | 56,4% / +147 $ | sì |
+| livello vs anni passati | 51,2% / −116 $ | 53,3% / +22 $ | 50,3% / +275 $ | **no** (vittorie) |
+| t-stat stagionale | 49,9% / −11 $ | 51,2% / +23 $ | 53,4% / +166 $ | sì |
+| ingresso con conferma 5 gg | 46,7% / −66 $ contro 52,7% / +99 $ degli stessi trade all'ingresso stagionale | | | **peggiora** |
+
+Scelta tra le 4 caratteristiche monotone, da sole o a coppie, per t-stat più
+alta: **`vol_regime:high+seasonal_t:high`** (sviluppo n=556, 58,1%, +524 $,
+t 4,74). Seconda: `mom20:high` (n=1.462, 52,6%, +252 $, t 4,17). Soglie: vol 20gg
+/ vol 120gg ≥ 1,00 e t-stat stagionale ≥ 2,94.
+**Congelata qui, prima di guardare 2023-2026.**
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di

@@ -38,7 +38,7 @@ import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from .futures_contracts import (
     MONTH_CODES, SPECS, ContractKey, DailySeries, read_dir, round_trip_cost,
@@ -217,7 +217,11 @@ class ScanResult:
 
 
 def scan(defs: Sequence[SpreadDef], data: Dict[ContractKey, DailySeries],
-         lookback: int, min_wins: int, grid: Sequence[Window]) -> ScanResult:
+         lookback: int, min_wins: int, grid: Sequence[Window],
+         on_pick: Optional[Callable[[SpreadDef, List[Cycle], int, Pick], None]] = None) -> ScanResult:
+    """Walk-forward over every spread. `on_pick(spread, cycles, t, pick)` sees each
+    best pick with its cycles, so callers can study the entry without re-running
+    the selection (cycles[:t] is everything the pick was allowed to know)."""
     res = ScanResult(windows_per_spread=len(grid))
     as_of = max(max(s) for s in data.values())
     for sd in defs:
@@ -251,6 +255,8 @@ def scan(defs: Sequence[SpreadDef], data: Dict[ContractKey, DailySeries],
                     best = Pick(sd.name, cycles[t].year, w, wins, mean, oos)
             if best:
                 res.best_picks.append(best)
+                if on_pick:
+                    on_pick(sd, cycles, t, best)
     return res
 
 

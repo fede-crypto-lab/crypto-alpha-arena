@@ -1274,3 +1274,35 @@ def test_a_series_that_stops_far_from_its_delivery_month_is_not_an_expired_cycle
     assert ends_at_expiry(("GC", "M", 2019), gold_june)        # gold trades into the month
     stray_2028 = {_date(2020, 3, 2) - _td(days=i): 1.0 for i in range(3)}
     assert not ends_at_expiry(("CL", "F", 2028), stray_2028)   # a far contract gone quiet
+
+
+# --- entry_filters ------------------------------------------------------------
+
+from research.funding_arb.entry_filters import confirmed_entry, features_at
+from research.funding_arb.seasonal_scan import Cycle as _Cycle
+
+
+def _ramp(start, n, step):
+    return {start + _td(days=i): 100.0 + step * i + (i % 3) for i in range(n)}
+
+
+def test_entry_features_never_read_the_entry_day_or_later():
+    v = _ramp(_date(2020, 1, 1), 60, 1.0)
+    entry = _date(2020, 2, 10)
+    before = features_at(v, entry, +1)
+    v2 = dict(v)
+    for d in v2:
+        if d >= entry:
+            v2[d] = -1e6   # a crash from the entry day on must not change the inputs
+    assert features_at(v2, entry, +1) == before
+    assert before["mom20"] > 0 and features_at(v, entry, -1)["mom20"] < 0   # signed by direction
+
+
+def test_confirmed_entry_waits_for_momentum_and_skips_without_it():
+    anchor = _date(2020, 6, 1)
+    falling = {anchor - _td(days=200 - i): 500.0 - i for i in range(200)}
+    c = _Cycle(2020, anchor, falling)
+    assert confirmed_entry(c, (150, 60, +1), cost=0) is None        # never turns up
+    rising = {d: -v for d, v in falling.items()}
+    pnl = confirmed_entry(_Cycle(2020, anchor, rising), (150, 60, +1), cost=0)
+    assert pnl is not None and pnl > 0
