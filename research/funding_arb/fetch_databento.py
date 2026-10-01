@@ -29,7 +29,7 @@ import argparse
 import os
 import sys
 from datetime import date
-from typing import List, Optional, Sequence
+from typing import Dict, List, Optional, Sequence
 
 from concurrent.futures import ThreadPoolExecutor
 
@@ -111,6 +111,53 @@ def download(client, root: str, end: str, out_dir: str, start: str = START,
     return n
 
 
+#: Databento StatType.SETTLEMENT_PRICE and StatUpdateAction.NEW.
+SETTLEMENT_PRICE = 3
+UPDATE_NEW = 1
+UNDEF_TS = 2 ** 63 - 1
+
+
+def settlements_from_dbn(paths: Sequence[str], root: str) -> List[tuple]:
+    """Official daily settlement per contract from `statistics` DBN files.
+
+    Why settlements: ohlcv-1d closes are the last trade before UTC midnight, so
+    the two legs of a spread can be hours apart. A one-day mean-reversion effect
+    on those closes (MEMORY.md §11-nonies) is exactly what that mismatch would
+    fake; settlements are struck for every contract at the same moment.
+
+    The trading date is `ts_ref`. A contract can receive several settlement
+    messages for one date (preliminary, then final); the last one received wins.
+    """
+    import databento as db
+    from databento.common.symbology import InstrumentMap
+
+    best: Dict[tuple, tuple] = {}
+    for path in paths:
+        store = db.DBNStore.from_file(path)
+        imap = InstrumentMap()
+        imap.insert_metadata(store.metadata)
+        for r in store:
+            if int(r.stat_type) != SETTLEMENT_PRICE or int(r.update_action) != UPDATE_NEW \
+                    or r.ts_ref == UNDEF_TS or r.price >= UNDEF_TS or r.price == 0:
+                # Exactly zero is a placeholder sent for far months with no
+                # settlement (416 of 21,577 GC rows 2010-2014), not a price.
+                continue
+            d = _utc_date(r.ts_ref)
+            symbol = imap.resolve(r.instrument_id, d)
+            key = parse_raw_symbol(symbol, d) if symbol else None
+            if key is None or key[0] != root:
+                continue
+            prev = best.get((key, d))
+            if prev is None or r.ts_recv >= prev[0]:
+                best[(key, d)] = (r.ts_recv, r.price / 1e9)
+    return [(d, key, px, 0.0) for (key, d), (_, px) in sorted(best.items(), key=lambda kv: kv[0][1])]
+
+
+def _utc_date(ns: int) -> date:
+    from datetime import datetime, timezone
+    return datetime.fromtimestamp(ns / 1e9, tz=timezone.utc).date()
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("--roots", nargs="+", default=sorted(SPECS), help="product roots (default: whole basket)")
@@ -121,7 +168,20 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--out", default=os.path.join(os.path.dirname(__file__), "data", "databento"))
     ap.add_argument("--confirm", action="store_true", help="actually download (billed)")
     ap.add_argument("--max-usd", type=float, default=DEFAULT_MAX_USD)
+    ap.add_argument("--extract-settlements", nargs="+", metavar="DBN",
+                    help="no download: turn already-downloaded statistics files for the one "
+                         "root in --roots into settlement rows under --out")
     a = ap.parse_args(argv)
+    if a.extract_settlements:
+        (root,) = a.roots
+        rows = settlements_from_dbn(a.extract_settlements, root)
+        series = {}
+        for d, key, px, _ in rows:
+            series.setdefault(key, {})[d] = px
+        check_plausible(root, dict(enumerate(px for _, _, px, _ in rows)), root)
+        n = write_rows(os.path.join(a.out, f"{root}.csv.gz"), rows)
+        print(f"  {root}: {n} settlements over {len(series)} contracts")
+        return 0
 
     unknown = [r for r in a.roots if r not in SPECS]
     if unknown:
