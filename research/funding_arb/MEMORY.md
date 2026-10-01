@@ -1168,6 +1168,30 @@ Limiti: finestre scelte tra 4 (tutte positive), costi stimati, NG pesa metà del
 totale e ha il 2022 eccezionale, ~8 spread aperti in contemporanea → capitale da
 verificare con i margini IBKR.
 
+### Filtro "l'anno in corso somiglia agli anni passati" (idea dell'utente, tipo Corr5) — fissato PRIMA
+
+Regola fissa dei 4 candidati (HG NG GF ZR, settlement, 180/90, vendi vicina/compra
+successiva). Per ogni trade: correlazione di Pearson tra il percorso dello spread
+nei 90 giorni prima dell'ingresso (solo prezzi precedenti) e il percorso medio dei
+5 cicli precedenti della stessa coppia negli stessi giorni (percorsi riportati a 0
+all'inizio). **Si entra solo se correlazione > 0** (soglia 0,5 solo informativa).
+Confronto filtrato vs non filtrato sugli stessi trade idonei (servono 5 cicli
+precedenti → dal 2016). **Passa se in entrambe le metà (2016-2020, 2021-2026):
+medio per trade +25%, vittorie +3 punti, totale/DD non peggiore.**
+
+**Risultato: il filtro PEGGIORA, in entrambe le metà → bocciato.**
+
+| | tutti i trade | corr > 0 (filtro) | corr ≤ 0 (scartati) | corr > 0,5 (info) |
+|---|---|---|---|---|
+| 2016-2020 | n=101, 64%, +19 $, tot/DD 0,2 | n=69, 67%, **−44 $** | n=32, 59%, +156 $, tot/DD 3,0 | n=29, −271 $ |
+| 2021-2026 | n=90, 64%, +252 $, tot/DD 10,0 | n=45, 58%, **+184 $**, tot/DD 4,0 | n=45, 71%, +321 $, tot/DD 12,2 | n=21, 48%, +125 $ |
+
+Per prodotto il filtro peggiora HG (+92 → −3 $), NG (+160 → +74 $) e ZR (+133 → +72 $);
+solo GF migliora il drawdown (1.445 → 458 $) con meno guadagno. Le operazioni
+scartate (anno "diverso" dal solito) vanno MEGLIO: suggerisce rientro verso la norma
+più che continuazione, ma è un'osservazione a posteriori — non adottarla senza un
+test su dati nuovi (paper trading). La regola semplice resta senza filtri.
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di
