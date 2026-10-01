@@ -1232,6 +1232,39 @@ marzo/aprile), diversificare, ed eventualmente evitare per conoscenza nota a pri
 lo spread gas marzo/aprile ("widowmaker", Amaranth 2006) — decisione da dichiarare
 come scelta di rischio, non come miglioramento statistico.
 
+### Scorte di gas EIA come allarme di scarsità — fissato PRIMA (idea dell'utente: "si vede dalle notizie")
+
+Fonte: EIA `dnav/ng/hist_xls/NW2_EPG0_SWO_R48_BCFw.xls` (gratis, raggiungibile, Lower 48
+settimanale dal 2010-01-01). Disponibilità: settimana che finisce il venerdì,
+pubblicata il giovedì dopo (+6 giorni) — si usa solo da quel giorno.
+Scarto = scorte / media stessa settimana degli anni precedenti (5, minimo 3 → dal 2013) − 1.
+Sulle operazioni NG della regola fissa (180/90, settlement):
+- N1: non entrare se l'ultimo scarto pubblicato è ≤ −5%;
+- N2: uscire se durante la tenuta esce un dato con scarto ≤ −5%.
+Soglia −5% fissata a priori, nessuna ottimizzazione. **Passa se totale/DD migliora
+≥ 25% e il totale non scende più del 20%** (ingressi 2013-2026).
+
+**Risultato scorte di gas: supera il criterio, ma il beneficio viene da UN evento.**
+
+Scarto scorte: set-nov 2018 da −19,6% a −17,5% (segnale chiaro prima dello squeeze);
+2021 da −8% a −3%; 2022 da −12% a −4%.
+
+| NG, ingressi 2013-2026 | n | vinte | totale | DD | tot/DD | peggiore |
+|---|---|---|---|---|---|---|
+| nessun filtro | 157 | 64% | +36.500 $ | 12.460 $ | 2,9 | −9.980 $ |
+| **N1 (no ingresso se ≤ −5%)** | 104 | 71% | +30.170 $ (−17%) | **1.680 $** | **18,0** ✓ | −590 $ |
+| N2 (esci a ≤ −5%) | 157 | 55% | +29.380 $ (−20%) | 2.670 $ | 11,0 ✓ | −1.180 $ |
+| soglia −3% / −10% (info) | 98 / 120 | 71 / 68% | 29.140 / 35.360 $ | 1.680 / 2.340 $ | 17,3 / 15,1 | |
+
+Ma **senza gli ingressi 2018**: nessun filtro +48.400 $, DD 2.470 $, tot/DD 19,6;
+N1 +30.170 $, DD 1.680 $, tot/DD 18,0 → fuori dal 2018 il filtro non migliora
+nulla e costa ~18.000 $ (scarta anche il 2022, +12.440 $). Operazioni scartate:
+n=53, 49% vinte, +119 $ medio. Lettura: è un'**assicurazione** con base teorica
+solida (scorte basse → rischio squeeze sulla scadenza vicina), che ha evitato
+l'unico disastro del campione, pagata circa 1/3 del guadagno. Statisticamente non
+dimostrabile con un solo evento. Compromesso possibile: dimezzare la posizione
+invece di saltarla quando lo scarto è ≤ −5% (non testato).
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di
