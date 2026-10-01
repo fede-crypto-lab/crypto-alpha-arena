@@ -1061,6 +1061,37 @@ contratto e data `ts_ref`; esclusi i segnaposto a prezzo 0, 416 su 21.577 righe 
      delle tensioni di scorte). Prossimo: spread bid/ask e margini reali IBKR sullo
      spread HG (TWS paper, sola lettura), poi paper trading.
 
+## 11-decies. Ricerca allargata: regola fissa "coppia attiva vicina→successiva" su tutti i prodotti
+
+Richiesta utente (01-10-2026): cercare altri candidati come il rame. Metodo fissato PRIMA:
+- Tappa 1 (gratis, chiusure ohlcv, 21 prodotti): per ogni prodotto, coppia formata da
+  ogni mese attivo (liquido) e il mese attivo successivo; regola fissa senza
+  stagionalità, in **entrambe le direzioni** (vendi vicina/compra successiva e il
+  contrario); 4 finestre (ingresso/tenuta in giorni prima dell'ultimo giorno retail):
+  90/60, 120/90, 180/90, 240/120; uscita prima del mese di consegna dove serve; costi
+  stimati 2 gambe. Anni di ingresso 2011-2026.
+- **Candidato** se, per una direzione: vittorie ≥ 55% e medio netto > 0 in almeno 3
+  delle 4 finestre, **e** nella finestra 120/90 medio netto > 0 sia 2011-2018 sia
+  2019-2026. (Il rame, scoperto prima, è il controllo: deve risultare candidato.)
+- Tappa 2: settlement (schema statistics) solo per i candidati; stesso criterio.
+  42 ipotesi (21 prodotti × 2 direzioni): qualche candidato per caso è atteso, la
+  tappa 2 serve a questo.
+
+### 11-decies — Tappa 1 (chiusure): 4 candidati, tutti "vendi vicina / compra successiva"
+
+| prodotto | vittorie nelle 4 finestre | medio netto | 120/90 metà 1 / metà 2 |
+|---|---|---|---|
+| HG rame (controllo) | 55 / 63 / 67 / 53% | +18 / +88 / +112 / +55 $ | +83 / +93 $ |
+| NG gas | 56 / 59 / 63 / 66% | +252 / +300 / +191 / +157 $ | +129 / +494 $ |
+| GF bovini da ingrasso | 58 / 53 / 62 / 67% | +216 / +222 / +159 / +250 $ | +127 / +328 $ |
+| ZR riso | 63 / 69 / 61 / 62% (n 90→13) | +60 / +136 / +77 / +217 $ | +144 / +126 $ |
+
+Vicini ma esclusi: HE −1 (68-69% a 180/90 e 240/120, ma 47-48% sulle brevi), LE −1,
+GC −1 (prima metà negativa), ZW −1. Quasi ovunque la direzione −1 batte la +1:
+coerente con la pressione dei fondi indicizzati che rollano vendendo la vicina
+(effetto "Goldman roll", da verificare). ZR è poco liquido (n cala con la distanza).
+Tappa 2: settlement NG 1,17 $ + GF 0,25 $ + ZR 0,07 $ = 1,49 $.
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di
