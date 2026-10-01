@@ -961,6 +961,59 @@ Letture:
 - Calendari ricorrenti nei metalli (esplorativo, è una selezione): GCV-GCQ+1 7/8
   anni +1.294 $, HGK-HGF+1 6/7 +1.317 $, HGN-HGF+1 6/7 +1.245 $.
 
+## 11-nonies. Oro e rame: fattori esterni (richiesta utente, 01-10-2026)
+
+Fonti esterne libere: FRED CSV senza chiave (`fredgraph.csv?id=…`), raggiungibile
+dal container: DTB3 (BOT 3 mesi), DGS2, DFII10 (reale 10a), DTWEXBGS (dollaro),
+SP500, VIXCLS, SOFR. Rame: secondo le fonti il motore degli spread è il livello
+delle **scorte** (LME/COMEX/SHFE) — non disponibile liberamente in modo automatico.
+
+Misure:
+- **Oro**: carry implicito (ln(F2/F1)/anni sulle prime due scadenze attive) contro
+  BOT 3m: correlazione dei livelli **0,95**; premio medio 0,5-1,9 pt (2020: 1,9).
+  Variazioni settimanali: 0,08 (rumore delle chiusure UTC).
+- **Rame**: carry contro BOT 0,46; dipende da altro (scorte).
+- P&L dei best pick calendario contro variazioni dei fattori durante il trade
+  (orientate per direzione): oro |r| ≤ 0,19 (il più alto: prezzo dell'oro −0,19,
+  meccanico), rame |r| ≤ 0,14. Oro long spread: BOT in calo 73% / +445 $, in salita
+  50% / −308 $ (come vuole la teoria), ma vince anche a tassi fermi (58% / +175 $).
+  Rame: short spread 60% / +244 $ (n=483), long spread 49% / +12 $ → il vantaggio
+  è vendere la scadenza vicina quando è tesa.
+
+### Segnale "carry anomalo" — parametri fissati PRIMA, nessuna ottimizzazione
+
+residuo = carry implicito − BOT 3m; z = (residuo − media 252 gg) / dev.std 252 gg.
+z ≤ −1,5 (curva anormalmente piatta/backwardation rispetto ai tassi) → vendi
+la scadenza vicina, compra la lontana; z ≥ +1,5 → il contrario. Uscita quando z
+torna a 0 o dopo 30 giorni di borsa; una posizione per metallo; coppia di
+contratti fissata all'ingresso; costi stimati 2 gambe. Periodi: 2011-2018 e
+2019-2026 riportati separati. **Passa se in ENTRAMBI i periodi**: netto totale > 0,
+vittorie ≥ 55%, netto totale ≥ 2 × massimo drawdown.
+
+### Carry anomalo — risultato: supera il criterio, ma è quasi certamente un ARTEFATTO
+
+`metals_factors.py`, parametri come fissati sopra, ingresso alla chiusura del
+giorno DOPO il segnale:
+
+| | ≤2018 | >2018 |
+|---|---|---|
+| oro | n=127, 62,2%, +5.440 $, DD 460 $ — PASS | n=90, 61,1%, +9.660 $, DD 980 $ — PASS |
+| rame | n=66, 72,7%, +3.978 $, DD 1.242 $ — PASS | n=44, 61,4%, +3.260 $, DD 765 $ — PASS |
+
+Controllo di robustezza (stesso segnale, decisioni ritardate di 1-2 giorni in più):
+oro con ingresso a 2 giorni **40,1%, −6.410 $**, 13/16 anni in perdita; a 3 giorni
+40,6%, −4.960 $. Rame a 2 giorni 43,6%, +537 $. Con costi ×2 (ingresso a 1 giorno):
+oro 51,2%, +8.590 $; rame 56,4%, +3.388 $.
+
+Un'anomalia di carry economica rientra in settimane; qui il vantaggio vive un
+giorno → firma delle **chiusure non sincronizzate** (ohlcv-1d chiude a mezzanotte
+UTC con l'ultimo scambio, che su una gamba può essere vecchio di ore): il segnale
+"vede" rumore di prezzo che il giorno dopo sparisce. **Non tradabile** finché non
+è rifatto sui settlement ufficiali (schema `statistics`): stima Databento
+GC 0,37 $ + HG 0,52 $ (≈0,9 $, 2010-2026). Lo stesso artefatto non può creare il
+vantaggio dei calendari stagionali (tenute 20-90 gg, scelta su anni precedenti),
+ma ne aggiunge rumore: anche quelli vanno ricontrollati sui settlement.
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di

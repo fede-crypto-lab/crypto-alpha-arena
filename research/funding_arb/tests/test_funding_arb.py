@@ -1306,3 +1306,31 @@ def test_confirmed_entry_waits_for_momentum_and_skips_without_it():
     rising = {d: -v for d, v in falling.items()}
     pnl = confirmed_entry(_Cycle(2020, anchor, rising), (150, 60, +1), cost=0)
     assert pnl is not None and pnl > 0
+
+
+# --- metals_factors -------------------------------------------------------------
+
+def test_carry_residual_z_excludes_the_day_itself_from_its_norm():
+    from research.funding_arb import metals_factors as mf
+    days = [_date(2020, 1, 1) + _td(days=i) for i in range(mf.Z_WINDOW + 1)]
+    carry = {d: mf.CarryPoint(0.02 + (0.001 if i % 2 else -0.001), ("GC", "G", 2021), ("GC", "J", 2021))
+             for i, d in enumerate(days)}
+    carry[days[-1]] = mf.CarryPoint(0.05, ("GC", "G", 2021), ("GC", "J", 2021))   # a spike today
+    bill = {d: 1.0 for d in days}
+    z = mf.residual_z(carry, bill)
+    assert list(z) == [days[-1]] and z[days[-1]] > 20   # the spike is far outside its own past
+
+
+def test_carry_trade_enters_the_day_after_the_signal():
+    from research.funding_arb import metals_factors as mf
+    d0 = _date(2021, 3, 1)
+    days = [d0 + _td(days=i) for i in range(5)]
+    a, b = ("GC", "M", 2021), ("GC", "Q", 2021)
+    data = {a: {d: 1800.0 + i for i, d in enumerate(days)}, b: {d: 1810.0 for d in days}}
+    data[a][_date(2021, 6, 20)] = 1800.0   # keeps the front far from expiry
+    data[b][_date(2021, 8, 20)] = 1810.0
+    carry = {d: mf.CarryPoint(0.0, a, b) for d in days}
+    z = {days[0]: 2.0, days[1]: 1.0, days[2]: 0.5, days[3]: -0.1, days[4]: -0.2}
+    (t,) = mf.backtest(data, "GC", carry, z)
+    assert t.entry == days[1] and t.exit == days[3] and t.direction == 1
+    assert t.net == pytest.approx((3 - 1) * 100 - mf.round_trip_cost(["GC", "GC"]))
