@@ -1342,6 +1342,27 @@ EIA scorte gas, USDA PSD, 198 WASDE "as published". **Non** nel repo (licenza,
 repo pubblico): Databento/CME, TradingView, SeasonAlgo, S&P 500, VIX → archivio
 consegnato all'utente per uso personale.
 
+### Scorte ABBONDANTI (richiesta utente) — descrittivo, regola 180/90, settlement
+
+| | scarsità | normale | abbondanza | (soglie) |
+|---|---|---|---|---|
+| NG | n=53, 49%, +119 $, peggiore −9.980 $ | n=49, 73%, +248 $ | n=55, 69%, **+327 $**, peggiore −590 $ | ±5% scorte EIA |
+| ZR | n=21, 57%, −57 $ | n=52, 65%, +96 $ | n=18, 56%, +244 $ (mediana 30 $) | ±15% stocks-to-use |
+| GF | n=45, **78%, +269 $** | n=23, 52%, +124 $ | n=34, 56%, −24 $ | ±2% carne |
+
+Lettura: per NG l'abbondanza è un regime "sicuro" come il normale (medio un po' più
+alto, perdite piccole): coerente con la teoria dello stoccaggio (scorte ampie →
+contango che si allarga). Differenza col normale non significativa (n≈50): niente
+regola di "posizione maggiorata" senza test dedicato. ZR campione troppo piccolo.
+GF al contrario (va meglio con carne in calo), come già visto.
+
+### Prodotti ICE (caffè KC, cacao CC, zucchero SB, cotone CT, succo d'arancia OJ)
+Mai testati (Databento IFUS solo dal 23-12-2018). Simboli dei contratti singoli in
+formato `KC  FMH0027!` (= marzo 2027). Stima costo 2018-12 → 2026-09:
+chiusure ohlcv-1d KC 7,86 $, CC 6,02 $, SB 8,34 $, CT 5,36 $, OJ 2,75 $ (~30 $ totali);
+settlement (statistics) 243-427 $ per prodotto → troppo cari. Chiedendo per
+"parent" (KC.FUT) il costo esplode (include spread e opzioni).
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di
