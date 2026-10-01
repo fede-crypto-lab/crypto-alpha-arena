@@ -1014,6 +1014,53 @@ GC 0,37 $ + HG 0,52 $ (≈0,9 $, 2010-2026). Lo stesso artefatto non può creare
 vantaggio dei calendari stagionali (tenute 20-90 gg, scelta su anni precedenti),
 ma ne aggiunge rumore: anche quelli vanno ricontrollati sui settlement.
 
+### Settlement ufficiali (schema statistics) — scaricati GC e HG 2010-2026 (~0,9 $)
+
+Estrazione: `fetch_databento --extract-settlements` (ultimo settlement ricevuto per
+contratto e data `ts_ref`; esclusi i segnaposto a prezzo 0, 416 su 21.577 righe GC
+2010-14, bloccati dal controllo unità). Settlement vs chiusura UTC: **mediana 2 $/oz
+= 200 $ a contratto** sull'oro. Il server manda ~1 MB/min: oro ~35 min, rame ~35 min.
+
+1. **Carry anomalo sull'oro sui settlement: MORTO.** 71 operazioni (contro 217 sulle
+   chiusure: il rumore generava i segnali), 31-38% vinte, negativo in entrambi i
+   periodi e con ogni ritardo. Artefatto confermato.
+2. **Correzione importante — primo giorno di avviso (first notice).** Metalli, grani
+   e LE si scambiano anche nel mese di consegna; lì la scadenza vicina converge allo
+   spot e lo spread "rolla" quasi meccanicamente, ma un conto retail deve uscire
+   prima (IBKR chiude, altrimenti consegna fisica). Lo scanner usciva 5 gg prima
+   dell'ultimo scambio, cioè dentro il mese di consegna. Ora `last_retail_day()`:
+   uscita entro la fine del mese precedente la consegna (`TRADES_IN_DELIVERY_MONTH`).
+   Prima della correzione l'oro sui settlement faceva 87% (+433 $) — tutto roll del
+   mese di consegna, non accessibile.
+3. Rifatto per settore (chiusure, regola corretta): metalli calendario 54,4% (W 51,7),
+   +86 $, 8/9 anni; ≤2022 52,6% / +51 $ (non significativo), >2022 56,7% / +133 $;
+   per prodotto rame 59% / +131 $ (n=701), oro 52% / +137 $, argento 40% / −165 $.
+   Grani 52,7% (≤2022 45,6%, >2022 61,3%), bestiame 55,4% (≤2022 62,9%, >2022 45,4%):
+   ancora dipendenti dal periodo. Petrolio e gas invariati (non toccati dalla regola).
+4. **Oro stagionale con regola corretta**: chiusure 51,8% (caso); settlement 72,1%,
+   +562 $, ma n=122 e tutto 2023-2025 (2019-2022 in perdita); correlazione col prezzo
+   dell'oro 0,53, 81% short spread → è una piccola scommessa al rialzo sull'oro
+   (contango in $ che si allarga col prezzo). **Nessun vantaggio strutturale sull'oro.**
+5. **Rame — il candidato migliore di tutto il progetto finora.**
+   - Stagionale, settlement: 74,0% (W 71,2), +264 $, n=1.031; anni 64-93% tranne
+     **2024 34% / −432 $**. Chiusure: 58,9%, +131 $. 93% delle scelte = vendi vicina /
+     compra lontana. Correlazione col prezzo del rame −0,41: vince 87% se il rame
+     scende, 65,5% se sale (il rame è salito nel periodo: non è beta).
+   - **Regola fissa senza stagionalità** (sempre vendi vicina / compra lontana, mesi
+     attivi HKNUZ distanti 1-6 mesi), settlement: 4 finestre provate, tutte positive:
+     90/60 64,5% +159 $; **120/90 69,6% +282 $ (anni in perdita 2/16)**; 180/90 70,4%
+     +244 $; 240/120 64,3% +218 $. Chiusure: 120/90 63,5% +234 $ (3/16).
+   - **Versione accessibile, solo coppia attiva vicina→successiva (5 trade/anno),
+     1 spread**: settlement 120/90 59,7%, +69 $/trade, totale 5.280 $ in 16 anni,
+     DD max 1.382 $, peggiore −798 $; 180/90 66,2%, +86 $, DD 628 $, peggiore −410 $.
+     Chiusure: 63,6-64,9%, +97-99 $, DD 1.390-1.658 $. 90/60 debole (+22 $).
+   - Limiti: guadagno per trade piccolo rispetto ai costi stimati (~35 $ a giro:
+     raddoppiarli dimezza il risultato); finestre scelte fra 3-4 provate (post-hoc,
+     ma tutte nello stesso verso); meccanismo economico non ancora spiegato
+     (ipotesi: premio per chi fornisce copertura sulla scadenza vicina + rientro
+     delle tensioni di scorte). Prossimo: spread bid/ask e margini reali IBKR sullo
+     spread HG (TWS paper, sola lettura), poi paper trading.
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di

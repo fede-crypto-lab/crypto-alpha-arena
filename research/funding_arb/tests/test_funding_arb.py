@@ -1334,3 +1334,18 @@ def test_carry_trade_enters_the_day_after_the_signal():
     (t,) = mf.backtest(data, "GC", carry, z)
     assert t.entry == days[1] and t.exit == days[3] and t.direction == 1
     assert t.net == pytest.approx((3 - 1) * 100 - mf.round_trip_cost(["GC", "GC"]))
+
+
+def test_gold_cycles_end_before_the_delivery_month_but_crude_runs_to_expiry():
+    # Gold June 2020 trades until late June; a retail account must be out by
+    # the end of May (first notice day). Crude June 2020 stops trading in May.
+    gc = {_date(2020, 6, 26) - _td(days=i): 1700.0 for i in range(300)}
+    gc_back = {_date(2020, 8, 27) - _td(days=i): 1710.0 for i in range(300)}
+    (c,) = build_cycles(SpreadDef("g", (("GC", "M", 0), ("GC", "Q", 0))),
+                        {("GC", "M", 2020): gc, ("GC", "Q", 2020): gc_back})
+    assert c.anchor == _date(2020, 5, 31)
+    cl = {_date(2020, 5, 19) - _td(days=i): 30.0 for i in range(300)}
+    cl_back = {_date(2020, 7, 21) - _td(days=i): 31.0 for i in range(300)}
+    (c,) = build_cycles(SpreadDef("c", (("CL", "M", 0), ("CL", "Q", 0))),
+                        {("CL", "M", 2020): cl, ("CL", "Q", 2020): cl_back})
+    assert c.anchor == _date(2020, 5, 19)

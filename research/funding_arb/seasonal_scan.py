@@ -56,6 +56,16 @@ MAX_GAP_DAYS = 5
 #: Exit no later than this many days before the first leg's last print: the
 #: final days of a contract are thin and dominated by delivery logistics.
 EXPIRY_BUFFER_DAYS = 5
+#: Physically delivered products that keep trading INTO their delivery month.
+#: A retail account cannot hold them past first notice day (end of the month
+#: before delivery): IBKR closes the position, or 100 oz of gold arrives. In the
+#: delivery month the front converges to spot and the calendar spread rolls
+#: down almost mechanically - a gain no retail trader can collect, and the
+#: source of an 87% gold "edge" on settlement data before this rule existed.
+#: Energy contracts stop trading before their delivery month and HE/GF are
+#: cash-settled, so they are not listed.
+TRADES_IN_DELIVERY_MONTH = frozenset(
+    {"GC", "SI", "HG", "PL", "PA", "ZC", "ZW", "KE", "ZS", "ZM", "ZL", "ZO", "ZR", "LE"})
 
 
 @dataclass(frozen=True)
@@ -106,6 +116,15 @@ def inter_defs(roots: Sequence[str]) -> List[SpreadDef]:
 LIVE_MARGIN_DAYS = 10
 
 
+def last_retail_day(key: ContractKey, s: DailySeries) -> date:
+    """Last day a retail account can still hold this contract."""
+    root, month, year = key
+    if root in TRADES_IN_DELIVERY_MONTH:
+        first_of_delivery = date(year, MONTH_CODES.index(month) + 1, 1)
+        return min(max(s), first_of_delivery - timedelta(days=1))
+    return max(s)
+
+
 def ends_at_expiry(key: ContractKey, s: DailySeries) -> bool:
     """Does the series stop where this contract's life ends?
 
@@ -144,7 +163,8 @@ def build_cycles(sd: SpreadDef, data: Dict[ContractKey, DailySeries],
             # The window must close before the FIRST leg stops trading: for
             # inter-commodity pairs that is not always the front (CL expires
             # about a week before RB of the same month).
-            anchor = min(max(s) for _, s in series)
+            anchor = min(last_retail_day((r, m, y + yo), s)
+                         for (r, s), (_, m, yo) in zip(series, sd.legs))
             common = set(front)
             for _, s in series[1:]:
                 common &= set(s)
