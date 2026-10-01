@@ -905,6 +905,28 @@ t 4,74). Seconda: `mom20:high` (n=1.462, 52,6%, +252 $, t 4,17). Soglie: vol 20g
 / vol 120gg ≥ 1,00 e t-stat stagionale ≥ 2,94.
 **Congelata qui, prima di guardare 2023-2026.**
 
+### 11-septies — CASSETTO 2023-2026 (guardato una volta): criterio NON superato
+
+| | n | vittorie | medio netto | mediana |
+|---|---|---|---|---|
+| cassetto, non filtrato | 3.615 | 57,0% | +373 $ | +140 $ |
+| cassetto, regola congelata | 279 | 61,6% | +544 $ | +290 $ |
+
+Per anno (non filtrato → filtrato): 2023 57,5%/+788 $ → **72,9%/+1.192 $**;
+2024 55,2%/+125 $ → **72,0%/+649 $**; 2025 58,4%/+230 $ → **40,5%/−103 $**;
+2026 56,8%/+235 $ → **48,1%/−81 $**.
+
+Criterio: medio +46% ✓, vittorie +4,6 pt ✓, **meglio in 2 anni su 4 ✗** (servivano
+3). **Fallito**, e peggiora proprio negli anni più recenti. Il filtro tiene solo
+~8% delle operazioni (27-93 per anno): troppo poche per fidarsi del dato aggregato.
+La seconda regola (`mom20:high`) NON è stata provata sul cassetto: farlo adesso
+sarebbe un secondo tentativo sugli stessi anni e il cassetto non sarebbe più tale.
+
+Conclusione: i filtri tecnici d'ingresso non aggiungono un miglioramento
+affidabile; si resta sulla regola stagionale calendario semplice. Nota a margine:
+quella regola semplice nel 2023-2026 fa 57,0% e +373 $ (anni già visti in §11-sexies,
+quindi non è una conferma indipendente).
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di
