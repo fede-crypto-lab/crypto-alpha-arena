@@ -1265,6 +1265,36 @@ l'unico disastro del campione, pagata circa 1/3 del guadagno. Statisticamente no
 dimostrabile con un solo evento. Compromesso possibile: dimezzare la posizione
 invece di saltarla quando lo scarto è ≤ −5% (non testato).
 
+### Indicatori di scarsità per GF e ZR (WASDE così come pubblicato) — fissati PRIMA
+
+Fonte: archivio USDA ESMIS (esmis.nal.usda.gov), 198 report WASDE 2010-01 → 2026-09
+(manca ott 2013, shutdown); testo per 2010 e 2017+, Excel appiattito per 2011-16.
+usda.gov blocca i download automatici (403); ESMIS no. Lettore: `scarcity.py`.
+- **GF**: produzione USA di carne bovina prevista, anno prossimo / anno in corso − 1
+  (ultima proiezione del report). Non entrare se **≤ −2%** (mandria in calo).
+- **ZR**: stocks-to-use previsto (ultima colonna) / media dei due anni precedenti
+  nella stessa tabella − 1. Non entrare se **≤ −15%**.
+- Valore usato = ultimo report pubblicato PRIMA del giorno d'ingresso.
+- Criterio come per NG: totale/DD migliora ≥ 25% e totale non scende > 20%;
+  controllo che non dipenda da un solo anno.
+- **Rame**: nessun dato di scorte libero (COMEX/LME/SHFE a pagamento o vietati
+  all'automazione); il suo DD è già basso (628 $). Non testato.
+
+**Risultati (180/90, settlement):**
+- **GF — bocciato, effetto opposto.** Nessun filtro 65%, +14.167 $, DD 7.385 $;
+  filtrato 54%, +2.042 $, DD 3.470 $ (tot/DD 1,9 → 0,6). Le operazioni scartate
+  (produzione di carne in calo: 2011-14, 2021-25) vincono il 78% (+269 $ medio):
+  con la mandria in calo la regola di solito GUADAGNA; le perdite 2024-25 erano in
+  fase di calo, ma lo sono anche gli anni migliori. L'outlook della carne non
+  separa gli squeeze.
+- **ZR — supera il criterio.** Nessun filtro 62%, +8.190 $, DD 3.450 $ (tot/DD 2,4);
+  filtrato 63%, **+9.380 $** (sale), DD **2.310 $** (tot/DD 4,1). Scartate n=21, 57%,
+  −57 $ medio. Beneficio da più di un anno: 2013 (−1.070 → +50 $) e 2020 COVID
+  (−2.890 → −1.750 $); costa qualcosa nel 2017-18. Campione piccolo (21 scartate).
+- Sintesi indicatori di scarsità: **NG scorte EIA** = assicurazione (un evento,
+  costa ~1/3 del guadagno); **ZR stocks-to-use** = migliora sia guadagno sia DD;
+  **GF** = no; **HG** = dati non liberi (DD già basso).
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di

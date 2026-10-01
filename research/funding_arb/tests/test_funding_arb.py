@@ -1361,3 +1361,56 @@ def test_a_reused_one_digit_symbol_resolves_per_instrument():
     assert resolve_contract({"NGZ6"}, _date(2026, 9, 29)) == ("NG", "Z", 2026)        # still live
     assert resolve_contract({"CLF0"}, _date(2019, 12, 19)) == ("CL", "F", 2020)      # Jan expires in Dec
     assert resolve_contract({"CLM5-CLN5"}, _date(2015, 1, 1)) is None
+
+
+# --- scarcity (WASDE as published) -------------------------------------------
+
+_BEEF_TXT = """                  U.S. Quarterly Animal Product Production  1/
+quarter     Beef    Pork
+2018
+       I    6465    6645
+SepProj.   27094   26675
+OctProj.   26944   26425
+2019
+      I*    6685    6895
+SepProj.   27720   27875
+OctProj.   27910   27810
+                    U.S. Quarterly Prices for Animal Products
+"""
+_BEEF_XLS = """U.S. Quarterly Animal Product Production  1/
+2013.0  IV  6423.0  6274.0
+Annual  25720.0  23187.0
+2014.0  I  5868.0  5785.0
+Annual
+Sep Proj.  24321.0  22774.0
+Oct Proj.  24356.0  22759.0
+2015.0  I*  5525.0  5910.0
+Sep Proj.  23640.0  23325.0
+Oct Proj.  23790.0  23925.0
+U.S. Quarterly Prices for Animal Products
+"""
+
+
+def test_beef_outlook_reads_both_report_formats_and_uses_the_latest_projection():
+    from research.funding_arb.scarcity import parse_beef
+    assert parse_beef(_BEEF_TXT) == pytest.approx(27910 / 26944 - 1)
+    assert parse_beef(_BEEF_XLS) == pytest.approx(23790 / 24356 - 1)
+
+
+def test_rice_stocks_to_use_uses_this_months_projection():
+    from research.funding_arb.scarcity import parse_rice
+    txt = """U.S. Rice Supply and Use
+TOTAL RICE
+      Use, Total                 248.0         221.8         231.0         231.0
+  Ending Stocks                   46.0          29.4          44.9          44.2
+"""
+    proj, past = parse_rice(txt)
+    assert proj == pytest.approx(44.2 / 231.0)
+    assert past == pytest.approx((46.0 / 248.0 + 29.4 / 221.8) / 2)
+
+
+def test_published_series_never_returns_a_report_from_the_same_day():
+    from research.funding_arb.scarcity import Published
+    p = Published({_date(2018, 10, 11): -0.2, _date(2018, 11, 8): 0.1})
+    assert p.as_of(_date(2018, 10, 11)) is None
+    assert p.as_of(_date(2018, 10, 12)) == -0.2
