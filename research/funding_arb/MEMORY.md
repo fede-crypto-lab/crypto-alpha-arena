@@ -927,6 +927,40 @@ affidabile; si resta sulla regola stagionale calendario semplice. Nota a margine
 quella regola semplice nel 2023-2026 fa 57,0% e +373 $ (anni già visti in §11-sexies,
 quindi non è una conferma indipendente).
 
+## 11-octies. Analisi per settore merceologico (richiesta dall'utente, 01-10-2026)
+
+`sector_report.py`, stesso walk-forward (lookback 8, ≥7/8). Gruppi: metalli
+(GC SI HG PL PA), petrolio (CL BZ HO RB), gas naturale (NG), grani e semi oleosi
+(ZC ZW KE ZS ZM ZL ZO ZR), bestiame (LE GF HE). Calendario = stesso prodotto;
+intra-settore = due prodotti collegati, stesso mese, 1:1 (non neutrale in
+nozionale: in parte direzionale). **Descrittivo** (divisione chiesta dopo aver
+visto i dati); le colonne ≤2022 / >2022 dicono se regge nelle due metà.
+
+| settore, tipo | spread | baseline | best pick | medio | ≤2022 | >2022 | anni > base | dev. std / peggiore |
+|---|---|---|---|---|---|---|---|---|
+| **metalli, calendario** | 415 | 46,8% | **55,8%** (W 53,3) | +133 $ | 54,6% / +105 $ | 57,3% / +169 $ | **9/9** | 1.207 / −9.290 $ |
+| metalli, intra | 120 | 49,8% | 44,8% | −1.336 $ | | | 2/9 | 21.868 / −159.690 $ |
+| petrolio, calendario | 570 | 48,9% | 51,8% (W 50,0) | +115 $ | 51,6% / +11 $ | 52,1% / +250 $ | 5/9 | 3.125 / −32.925 $ |
+| petrolio, intra | 72 | 49,4% | 48,2% | −234 $ | | | 6/9 | 4.235 / −25.229 $ |
+| gas, calendario | 144 | 47,9% | 59,3% | +753 $ | **49,8% / −93 $** | **75,6% / +2.195 $** | 7/9 | 3.891 / −22.470 $ |
+| grani, calendario | 302 | 46,2% | 51,5% | +86 $ | **43,5% / −35 $** | **61,1% / +230 $** | 7/9 | 1.199 / −7.850 $ |
+| grani, intra | 138 | 49,4% | 49,4% | −59 $ | 47,0% / −366 $ | 51,5% / +218 $ | 6/9 | 3.580 / −17.810 $ |
+| bestiame, calendario | 156 | 48,4% | 56,2% (W 53,1) | +183 $ | **62,1% / +454 $** | **48,1% / −187 $** | 7/9 | 1.927 / −8.680 $ |
+| bestiame, intra | 13 | 49,6% | 59,2% (n=103) | +776 $ | 63,6% | 54,2% | 6/9 | 4.530 / −12.598 $ |
+
+Letture:
+- **Solo i calendari sui metalli reggono in entrambe le metà e in tutti i 9 anni**,
+  con il rischio per trade più contenuto. Per prodotto: oro 61% / +199 $ (n=423),
+  rame 56% / +158 $ (n=764); argento 46% / −63 $ e platino 55% / −46 $ negativi.
+  Probabile motore: carry finanziario (tassi) più che stagionalità, da verificare.
+- Gas e grani: buoni solo dopo il 2022 (regime: crisi gas/GNL, shock grano 2022).
+  Bestiame: buono prima, negativo dopo. Petrolio: marginale. → dipendenti dal regime.
+- Intra-settore: negativo quasi ovunque; metalli disastroso (nozionali 1:1 molto
+  diversi). Eccezioni piccole e da non sopravvalutare: bestiame (n=103), HO-RB
+  (64%, n=97), HOQ-RBQ 9/9 anni (lista esplorativa).
+- Calendari ricorrenti nei metalli (esplorativo, è una selezione): GCV-GCQ+1 7/8
+  anni +1.294 $, HGK-HGF+1 6/7 +1.317 $, HGN-HGF+1 6/7 +1.245 $.
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di
