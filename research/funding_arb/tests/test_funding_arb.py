@@ -1449,8 +1449,19 @@ def test_scarcity_filter_blocks_using_the_report_before_entry():
     from research.funding_arb.scarcity import Published
     from research.funding_arb.signals import Trade, apply_filters
     t = Trade("NG", ("NG", "H", 2019), ("NG", "J", 2019), _date(2018, 9, 4), _date(2018, 12, 3))
-    apply_filters([t], Published({_date(2018, 8, 30): -0.19}), None)
+    apply_filters([t], Published({_date(2018, 8, 30): -0.19}))
     assert t.blocked and "scorte gas" in t.blocked
+
+
+def test_signals_drop_rice_and_tag_cattle_optional():
+    from research.funding_arb.signals import PRODUCTS, report, schedule
+    assert "ZR" not in PRODUCTS
+    trades = [t for r in PRODUCTS for t in schedule(r, [2026, 2027])]
+    text = report(_date(2026, 9, 21), 14, trades, None)
+    gf = [l for l in text.splitlines() if "Bovini" in l]
+    assert gf and all("OPZIONALE" in l for l in gf)
+    assert not any("OPZIONALE" in l for l in text.splitlines() if "Rame" in l or "Gas" in l)
+    assert "LIMITE a metà" in text
 
 
 def test_signals_module_contains_no_order_code():

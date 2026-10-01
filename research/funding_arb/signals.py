@@ -5,16 +5,18 @@ ALERTS ONLY. This module computes dates and reads public data; it does not
 connect to a broker and contains no order code, by design (CLAUDE.md,
 Boundaries). Orders, if any, are placed by a person.
 
-The rule (MEMORY.md §11-decies and the scarcity sections):
-* products: copper (HG), natural gas (NG), feeder cattle (GF), rough rice (ZR);
+The rule (MEMORY.md §11-decies, the scarcity sections and §11-terdecies):
+* products: copper (HG) and natural gas (NG); feeder cattle (GF) is optional,
+  for larger accounts (it diversifies but triples the margin); rough rice (ZR)
+  is dropped: its real bid/ask (~1,600 $ wide) exceeds its average gain;
 * for each liquid delivery month, SELL that contract and BUY the next liquid
   month, one contract each, from 180 days before the last day a retail account
   can hold the front, for 90 days;
 * NG: do not open if EIA storage was more than 5% below the same week of
   earlier years in the last report before the entry day;
-* ZR: do not open if WASDE projected stocks-to-use was 15% or more below the
-  two earlier years in the last report before the entry day;
-* GF: no filter (the cattle outlook failed its test); larger drawdowns, smaller size.
+* GF: no filter (the cattle outlook failed its test);
+* always a limit order at the middle of the bid/ask: crossing it erases the
+  copper edge (MEMORY.md §11-terdecies).
 
 It keeps no state: open positions are re-derived from the rule each run, using
 the indicator values that were public on each entry day.
@@ -26,7 +28,6 @@ the indicator values that were public on each entry day.
 from __future__ import annotations
 
 import argparse
-import re
 import sys
 import time
 import urllib.request
@@ -36,16 +37,15 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 from .fixed_rule_scan import ACTIVE
 from .futures_contracts import MONTH_CODES
-from .scarcity import EIA_STORAGE_URL, Published, parse_eia_storage, parse_rice, storage_deficit
+from .scarcity import EIA_STORAGE_URL, Published, parse_eia_storage, storage_deficit
 
-PRODUCTS = ("HG", "NG", "GF", "ZR")
-NAMES = {"HG": "Rame COMEX", "NG": "Gas naturale NYMEX", "GF": "Bovini da ingrasso CME",
-         "ZR": "Riso CBOT"}
+PRODUCTS = ("HG", "NG", "GF")
+#: Shown, but tagged optional: worth it only with the capital its margin needs.
+OPTIONAL = {"GF": "OPZIONALE: solo con capitale ≥ ~15.000 $ (margine ~1.835 $ a spread, fino a 4 aperti)"}
+NAMES = {"HG": "Rame COMEX", "NG": "Gas naturale NYMEX", "GF": "Bovini da ingrasso CME"}
 ENTRY_DAYS_BEFORE = 180
 HOLD_DAYS = 90
 NG_STORAGE_LIMIT = -0.05
-ZR_STOCKS_LIMIT = -0.15
-ESMIS = "https://esmis.nal.usda.gov"
 UA = {"User-Agent": "Mozilla/5.0 (research alert; low rate)"}
 
 Contract = Tuple[str, str, int]
@@ -66,15 +66,15 @@ def _business_days_before(d: date, n: int) -> date:
 def last_retail_day(c: Contract) -> date:
     """Last day a retail account can hold the contract, from exchange rules.
 
-    HG and ZR are physically delivered and trade into the delivery month: out by
-    the end of the month before it (first notice day). NG stops trading three
+    HG is physically delivered and trades into the delivery month: out by the
+    end of the month before it (first notice day). NG stops trading three
     business days before the delivery month. GF is cash-settled and trades to
     the last Thursday of the contract month. Within a couple of days of the real
     calendar, which is all a 180-day-ahead entry needs; holidays are ignored.
     """
     root, month, year = c
     first = _first_of(month, year)
-    if root in ("HG", "ZR"):
+    if root == "HG":
         return first - timedelta(days=1)
     if root == "NG":
         return _business_days_before(first, 3)
@@ -177,65 +177,46 @@ def fetch_storage() -> Published:
     return Published(storage_deficit(parse_eia_storage(_get(EIA_STORAGE_URL))))
 
 
-def fetch_rice(since: date, until: date) -> Published:
-    """WASDE rice stocks-to-use tightness for every report released in [since, until]."""
-    values: Dict[date, float] = {}
-    y, m = since.year, since.month
-    while (y, m) <= (until.year, until.month):
-        html = _get(f"{ESMIS}/publication/world-agricultural-supply-and-demand-estimates?date={y}-{m:02d}")
-        body = html.decode("utf-8", "ignore")
-        body = body[body.find("<tbody"):body.find("</tbody>")]
-        for row in body.split("<tr")[1:]:
-            d = re.search(r'datetime="(\d{4}-\d{2}-\d{2})', row)
-            t = re.search(r'href="([^"]+\.txt)"', row)
-            if d and t:
-                parsed = parse_rice(_get(ESMIS + t.group(1)).decode("utf-8", "ignore"))
-                if parsed:
-                    values[date.fromisoformat(d.group(1))] = parsed[0] / parsed[1] - 1
-        y, m = (y + 1, 1) if m == 12 else (y, m + 1)
-        time.sleep(0.8)
-    return Published(values)
-
-
-def apply_filters(trades: List[Trade], storage: Optional[Published], rice: Optional[Published]) -> None:
+def apply_filters(trades: List[Trade], storage: Optional[Published]) -> None:
     for t in trades:
         if t.root == "NG" and storage is not None:
             v = storage.as_of(t.entry)
             if v is not None and v <= NG_STORAGE_LIMIT:
                 t.blocked = f"scorte gas {v:+.1%} rispetto agli anni precedenti (limite {NG_STORAGE_LIMIT:+.0%})"
-        if t.root == "ZR" and rice is not None:
-            v = rice.as_of(t.entry)
-            if v is not None and v <= ZR_STOCKS_LIMIT:
-                t.blocked = f"scorte riso previste {v:+.0%} rispetto ai 2 anni prima (limite {ZR_STOCKS_LIMIT:+.0%})"
 
 
-def report(today: date, days: int, trades: List[Trade], storage: Optional[Published],
-           rice: Optional[Published]) -> str:
+def _tag(t: Trade) -> str:
+    return f" [{OPTIONAL[t.root]}]" if t.root in OPTIONAL else ""
+
+
+def report(today: date, days: int, trades: List[Trade], storage: Optional[Published]) -> str:
     horizon = today + timedelta(days=days)
+    trades = sorted(trades, key=lambda t: t.entry)
     to_open = [t for t in trades if today <= t.entry <= horizon]
     to_close = [t for t in trades if today <= t.exit <= horizon and t.entry < today and not t.blocked]
     open_now = [t for t in trades if t.entry < today < t.exit and not t.blocked]
     lines = [f"AVVISI SPREAD — {today.isoformat()} (prossimi {days} giorni). Solo avvisi: nessun ordine viene inviato.", ""]
     s = storage.as_of(today + timedelta(days=1)) if storage else None
-    r = rice.as_of(today + timedelta(days=1)) if rice else None
     lines.append("Indicatori di scarsità (ultimo dato pubblicato):")
     lines.append(f"  gas, scorte EIA vs anni precedenti: {s:+.1%}" if s is not None else "  gas: dato non disponibile")
-    lines.append(f"  riso, scorte/consumi WASDE vs 2 anni prima: {r:+.0%}" if r is not None else "  riso: dato non disponibile")
     lines.append("")
     lines.append("DA APRIRE:" if to_open else "DA APRIRE: niente in questo periodo.")
     for t in to_open:
         tag = f"NON APRIRE — {t.blocked}" if t.blocked else "APRI"
-        lines.append(f"  {t.entry} {NAMES[t.root]}: {tag}\n      {t.legs()}\n      uscita prevista {t.exit}"
-                     + ("\n      nota: drawdown storici alti, dimensione ridotta" if t.root == "GF" and not t.blocked else ""))
+        lines.append(f"  {t.entry} {NAMES[t.root]}: {tag}{'' if t.blocked else _tag(t)}\n      {t.legs()}\n"
+                     f"      uscita prevista {t.exit}")
     lines.append("DA CHIUDERE:" if to_close else "DA CHIUDERE: niente in questo periodo.")
     for t in to_close:
         lines.append(f"  {t.exit} {NAMES[t.root]}: CHIUDI {t.legs().replace('VENDI', 'riacquista').replace('COMPRA', 'rivendi')}"
-                     f" (aperta il {t.entry})")
+                     f" (aperta il {t.entry}){_tag(t)}")
     lines.append(f"APERTE secondo la regola ({len(open_now)}):")
     for t in open_now:
-        lines.append(f"  {NAMES[t.root]}: {t.legs()} — dal {t.entry}, uscita {t.exit}")
-    lines += ["", "Ricorda: le date di scadenza sono calcolate dalle regole di borsa e possono differire di 1-2 giorni"
-              " (festività); verifica sul contratto in TWS. Costi e margini reali non sono ancora stati misurati."]
+        lines.append(f"  {NAMES[t.root]}: {t.legs()} — dal {t.entry}, uscita {t.exit}{_tag(t)}")
+    lines += ["", "Esecuzione: in TWS la strategia 'Calendar spread' (vendi vicina / compra successiva) si ACQUISTA."
+              " Sempre ordine LIMITE a metà tra bid e ask, mai a mercato: attraversare la forbice annulla il"
+              " vantaggio del rame. Se non eseguito, avvicinati di 1 scatto al giorno.",
+              "Ricorda: le date di scadenza sono calcolate dalle regole di borsa e possono differire di 1-2 giorni"
+              " (festività); verifica sul contratto in TWS."]
     return "\n".join(lines)
 
 
@@ -247,18 +228,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     a = ap.parse_args(argv)
     years = range(a.date.year - 1, a.date.year + 2)
     trades = [t for root in PRODUCTS for t in schedule(root, years)]
-    storage = rice = None
+    storage = None
     if not a.offline:
         try:
             storage = fetch_storage()
         except RuntimeError as e:
             print(f"ATTENZIONE: scorte gas non scaricate ({e}); filtro NG non applicato", file=sys.stderr)
-        try:
-            rice = fetch_rice(a.date - timedelta(days=HOLD_DAYS + 45), a.date + timedelta(days=a.days))
-        except RuntimeError as e:
-            print(f"ATTENZIONE: WASDE non scaricato ({e}); filtro riso non applicato", file=sys.stderr)
-    apply_filters(trades, storage, rice)
-    print(report(a.date, a.days, trades, storage, rice))
+    apply_filters(trades, storage)
+    print(report(a.date, a.days, trades, storage))
     return 0
 
 
