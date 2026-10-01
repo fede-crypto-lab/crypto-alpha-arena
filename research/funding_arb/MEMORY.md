@@ -1314,6 +1314,34 @@ librerie di broker; un test fallisce se compaiono placeOrder/ib_async/ecc.
   7 spread aperti secondo la regola; da chiudere ZRF27/ZRH27 il 5-10, NGG27/NGH27 il 29-10;
   da aprire NGK27/NGM27 il 30-10.
 
+### Contro-operazione in scarsità (idea dell'utente) — fissata PRIMA
+
+Quando il filtro di scarsità blocca un ingresso (NG scorte ≤ −5%; ZR stocks-to-use
+≤ −15%; per informazione anche GF carne ≤ −2%), invece di stare fuori: **compra la
+vicina / vendi la successiva** con la stessa finestra (180/90). Passa se le
+contro-operazioni hanno medio netto > 0 **e** vittorie ≥ 55% **e** il portafoglio
+(regola + contro-operazioni) ha totale più alto senza DD più alto della regola
+filtrata. Informativo: tenuta più corta (60 gg), visto che gli squeeze sono rapidi.
+
+**Risultato contro-operazione in scarsità: bocciata ovunque.**
+
+| | contro-operazioni (compra vicina / vendi successiva) 180/90 | regola + contro vs regola filtrata |
+|---|---|---|
+| NG | n=53, **32%**, −179 $ medio, DD 21.570 $; per anno: 2018 **+11.180 $**, 2021 −3.570 $, **2022 −14.130 $** | totale 30.290 → 20.780 $, DD 2.110 → 19.350 $ |
+| ZR | n=21, 29%, −3 $ medio (2013 +820, 2020 +1.020, altri negativi) | 9.380 → 9.310 $, DD 2.310 → 2.880 $ |
+| GF | n=45, 18%, −339 $ medio (solo 2024-25 positivi) | 2.042 → −13.232 $ |
+
+Tenuta 60 gg (info): peggio o uguale. Lettura: la scarsità è un RISCHIO (code
+rare, come il 2018), non una direzione affidabile: in media, anche con scorte
+basse, la vicina continua a indebolirsi rispetto alla successiva; solo gli squeeze
+estremi pagano la contro-operazione. Si resta su "stare fuori" (NG, ZR).
+
+### Dati salvati (01-10-2026)
+`public_data/` (pubblico dominio, nel repo): FRED DTB3/DGS2/DFII10/DTWEXBGS/SOFR,
+EIA scorte gas, USDA PSD, 198 WASDE "as published". **Non** nel repo (licenza,
+repo pubblico): Databento/CME, TradingView, SeasonAlgo, S&P 500, VIX → archivio
+consegnato all'utente per uso personale.
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di
