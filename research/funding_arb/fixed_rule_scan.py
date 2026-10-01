@@ -20,10 +20,10 @@ import statistics
 import sys
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import timedelta
+from datetime import date, timedelta
 from typing import Dict, List, Optional, Sequence, Tuple
 
-from .futures_contracts import read_dir, round_trip_cost
+from .futures_contracts import MONTH_CODES, read_dir, round_trip_cost
 from .seasonal_scan import SpreadDef, _Lookup, build_cycles, window_pnl
 
 #: Delivery months with real liquidity. Off-cycle months trade thinly and their
@@ -119,13 +119,72 @@ def report(cells, roots: Sequence[str]) -> str:
     return "\n".join(lines)
 
 
+def nth_weekday(year: int, month: int, n: int) -> date:
+    """n-th Monday-to-Friday of a month (exchange holidays ignored: an entry
+    or exit then slides to the next print, which `_Lookup` does anyway)."""
+    d, seen = date(year, month, 1), 0
+    while True:
+        if d.weekday() < 5:
+            seen += 1
+            if seen == n:
+                return d
+        d += timedelta(days=1)
+
+
+def roll_window_test(data, roots: Sequence[str], entry_bd: int = 2, exit_bd: int = 9):
+    """Sell the front, buy the next active month, from the entry_bd-th to the
+    exit_bd-th business day of the month before the front's delivery month -
+    around the GSCI roll (5th-9th business day). Returns {root: {year: [net]}}."""
+    out: Dict[str, Dict[int, List[float]]] = {}
+    for root in roots:
+        by_year: Dict[int, List[float]] = defaultdict(list)
+        for sd in next_active_pairs(root):
+            cost = round_trip_cost(sd.roots)
+            month = MONTH_CODES.index(sd.legs[0][1]) + 1
+            for c in build_cycles(sd, data, None):
+                y, m = (c.year, month - 1) if month > 1 else (c.year - 1, 12)
+                if y < FIRST_YEAR:
+                    continue
+                lk = _Lookup(c.values)
+                e = lk.at_or_after(nth_weekday(y, m, entry_bd))
+                x = lk.at_or_after(nth_weekday(y, m, exit_bd))
+                if e and x and x[0] > e[0] and x[0] <= c.anchor and (x[0] - e[0]).days < 20:
+                    by_year[e[0].year].append(-(x[1] - e[1]) - cost)
+        out[root] = by_year
+    return out
+
+
+def roll_report(results) -> str:
+    lines = ["GSCI-roll window: sell front / buy next, 2nd -> 9th business day of the month "
+             "before delivery; costs are an estimate"]
+    for root, by_year in results.items():
+        halves = []
+        for first in (True, False):
+            xs = [x for y, v in by_year.items() for x in v if (y <= SPLIT_YEAR) == first]
+            halves.append(xs)
+        cells = []
+        ok = True
+        for xs in halves:
+            if not xs:
+                cells.append("n=0".ljust(30)); ok = False; continue
+            w, m = sum(x > 0 for x in xs) / len(xs), statistics.mean(xs)
+            ok &= w >= 0.55 and m > 0
+            cells.append(f"n={len(xs):3d} win {w:4.0%} mean {m:6.0f}$".ljust(30))
+        lines.append(f"  {root:3s} 2011-18: {cells[0]} 2019-26: {cells[1]} {'CANDIDATE' if ok else ''}")
+    return "\n".join(lines)
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     ap.add_argument("directory")
     ap.add_argument("--roots", nargs="+")
+    ap.add_argument("--roll", action="store_true", help="GSCI-roll window test instead")
     a = ap.parse_args(argv)
     data = read_dir(a.directory)
     roots = [r for r in (a.roots or ACTIVE) if r in {k[0] for k in data}]
+    if a.roll:
+        print(roll_report(roll_window_test(data, roots)))
+        return 0
     print(report(run(data, roots), roots))
     return 0
 

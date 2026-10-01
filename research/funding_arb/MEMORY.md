@@ -1092,6 +1092,24 @@ coerente con la pressione dei fondi indicizzati che rollano vendendo la vicina
 (effetto "Goldman roll", da verificare). ZR è poco liquido (n cala con la distanza).
 Tappa 2: settlement NG 1,17 $ + GF 0,25 $ + ZR 0,07 $ = 1,49 $.
 
+### Ipotesi "Goldman roll" (Mou, CFTC) — fissata PRIMA dei dati
+
+I fondi indicizzati (GSCI) rollano tra il 5° e il 9° giorno lavorativo del mese che
+precede il mese del contratto: vendono la vicina, comprano la successiva. Mou trova
++1,57% in 10 giorni per chi vende vicina/compra successiva qualche giorno prima
+(2000-2009); Irwin, Sanders e Yan trovano costi d'ordine molto più piccoli dopo.
+Test: per ogni prodotto e coppia attiva vicina→successiva, ingresso alla chiusura
+del **2° giorno lavorativo** del mese che precede il mese di consegna della vicina,
+uscita alla chiusura del **9°**; vendi vicina / compra successiva; costi stimati.
+Settlement dove disponibili (GC, HG, poi NG, GF, ZR), chiusure altrove.
+**Candidato** se vittorie ≥ 55% e medio netto > 0 sia 2011-2018 sia 2019-2026.
+
+**Risultato Goldman roll: nessun candidato.** Chiusure, 21 prodotti: vittorie quasi
+ovunque < 50% (costi > movimento in 1 settimana); unico con medio positivo in
+entrambe le metà RB (+122 $ / +122 $) ma vittorie 54% / 51%. Settlement: GC 12% / 26%,
+HG 25% / 62%. Effetto assorbito dopo il 2010, come in Irwin-Sanders-Yan. Il
+vantaggio di HG/NG/GF/ZR sta nei mesi PRIMA del roll, non nella settimana del roll.
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di
