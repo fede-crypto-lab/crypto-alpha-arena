@@ -123,3 +123,45 @@ class Published:
     def as_of(self, d: date) -> Optional[float]:
         i = bisect.bisect_left(self.days, d) - 1
         return self.values[self.days[i]] if i >= 0 else None
+
+
+#: EIA weekly working gas, Lower 48 (Bcf). Free, no key, history from 2010.
+EIA_STORAGE_URL = "https://www.eia.gov/dnav/ng/hist_xls/NW2_EPG0_SWO_R48_BCFw.xls"
+#: The week ends on Friday; the report comes out the following Thursday.
+EIA_RELEASE_LAG_DAYS = 6
+
+
+def parse_eia_storage(xls_bytes: bytes) -> Dict[date, float]:
+    """{week-ending date: working gas in Bcf} from the EIA history workbook."""
+    import xlrd  # only needed for this one file format
+    from datetime import timedelta
+    sheet = xlrd.open_workbook(file_contents=xls_bytes).sheet_by_name("Data 1")
+    out = {}
+    for i in range(3, sheet.nrows):
+        serial, value = sheet.row_values(i)[:2]
+        if value != "":
+            out[date(1899, 12, 30) + timedelta(days=int(serial))] = float(value)
+    return out
+
+
+def storage_deficit(storage: Dict[date, float], min_years: int = 3) -> Dict[date, float]:
+    """{release date: storage / mean of the same week in up to 5 earlier years - 1}.
+
+    Keyed by RELEASE date (week end + 6 days), so `Published.as_of` never hands
+    a backtest or a live signal a number before the market had it.
+    """
+    from datetime import timedelta
+    weeks = sorted(storage)
+
+    def near(d: date) -> Optional[float]:
+        i = bisect.bisect_left(weeks, d)
+        cands = [weeks[j] for j in (i - 1, i) if 0 <= j < len(weeks)]
+        w = min(cands, key=lambda x: abs((x - d).days)) if cands else None
+        return storage[w] if w and abs((w - d).days) <= 4 else None
+
+    out = {}
+    for w in weeks:
+        prior = [v for k in range(1, 6) if (v := near(w - timedelta(days=364 * k))) is not None]
+        if len(prior) >= min_years:
+            out[w + timedelta(days=EIA_RELEASE_LAG_DAYS)] = storage[w] / (sum(prior) / len(prior)) - 1
+    return out

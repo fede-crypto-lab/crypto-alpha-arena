@@ -1295,6 +1295,25 @@ usda.gov blocca i download automatici (403); ESMIS no. Lettore: `scarcity.py`.
   costa ~1/3 del guadagno); **ZR stocks-to-use** = migliora sia guadagno sia DD;
   **GF** = no; **HG** = dati non liberi (DD già basso).
 
+## 11-undecies. Script di avvisi settimanali (`signals.py`) — SOLO AVVISI, nessun ordine
+
+Richiesta utente (01-10-2026): avvisi su quali spread aprire/chiudere; ordini NON
+automatici (l'utente ha esplicitamente ritirato l'opzione). Il modulo non importa
+librerie di broker; un test fallisce se compaiono placeOrder/ib_async/ecc.
+- Regola: HG, NG, GF, ZR; ogni mese liquido contro il successivo; vendi vicina /
+  compra successiva; ingresso 180 gg prima dell'ultimo giorno retail, 90 gg di tenuta.
+- Filtri: NG no se scorte EIA ≤ −5%; ZR no se stocks-to-use WASDE ≤ −15%;
+  GF nessun filtro (nota "dimensione ridotta"); HG nessuno.
+- Date di scadenza da regole di borsa (`last_retail_day`), verificate su tutti i
+  contratti 2011-2026: HG e ZR esatte, NG 0-3 gg (festività), GF −1/0 gg dopo aver
+  aggiunto Ringraziamento, Memorial Day e Venerdì Santo (prima, 30 su 134 sbagliati
+  di una settimana).
+- Senza stato: le posizioni "aperte" sono ricalcolate dalla regola con gli
+  indicatori pubblicati alla data d'ingresso. Fonti live: EIA xls, ESMIS WASDE.
+- Primo report (2026-10-01): gas +0,8% (ok), riso −20% (prossimi ZR bloccati);
+  7 spread aperti secondo la regola; da chiudere ZRF27/ZRH27 il 5-10, NGG27/NGH27 il 29-10;
+  da aprire NGK27/NGM27 il 30-10.
+
 ## 12. Cosa manca, in ordine di valore
 
 1. **Ribilanciamento della copertura.** L'unica leva vista spostare il risultato di

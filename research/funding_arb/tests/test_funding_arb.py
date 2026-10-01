@@ -1414,3 +1414,48 @@ def test_published_series_never_returns_a_report_from_the_same_day():
     p = Published({_date(2018, 10, 11): -0.2, _date(2018, 11, 8): 0.1})
     assert p.as_of(_date(2018, 10, 11)) is None
     assert p.as_of(_date(2018, 10, 12)) == -0.2
+
+
+def test_storage_deficit_is_keyed_by_release_day_and_uses_earlier_years_only():
+    from research.funding_arb.scarcity import storage_deficit
+    last = _date(2018, 10, 5)          # a Friday; EIA weeks are 52 weeks apart
+    weeks = {last - _td(days=364 * k): 3000.0 for k in range(4)}
+    weeks[last] = 2400.0           # 20% below the earlier years
+    dev = storage_deficit(weeks)
+    assert list(dev) == [last + _td(days=6)]
+    assert dev[last + _td(days=6)] == pytest.approx(-0.2)
+
+
+# --- signals (alerts only) ----------------------------------------------------
+
+def test_signal_dates_follow_exchange_rules():
+    from research.funding_arb.signals import last_retail_day
+    assert last_retail_day(("HG", "H", 2027)) == _date(2027, 2, 28)     # out before first notice
+    assert last_retail_day(("NG", "F", 2027)) == _date(2026, 12, 29)    # 3rd last business day of Dec
+    assert last_retail_day(("GF", "X", 2025)) == _date(2025, 11, 20)    # Thursday before Thanksgiving
+    assert last_retail_day(("GF", "J", 2025)) == _date(2025, 4, 17)     # Thursday before Good Friday
+    assert last_retail_day(("GF", "K", 2026)) == _date(2026, 5, 21)     # Memorial Day week
+
+
+def test_schedule_pairs_each_liquid_month_with_the_next_and_rolls_the_year():
+    from research.funding_arb.signals import schedule
+    hg = schedule("HG", [2027])
+    assert [(t.front[1], t.back[1], t.back[2]) for t in hg][-1] == ("Z", "H", 2028)
+    t = hg[0]
+    assert t.entry.weekday() < 5 and (t.exit - t.entry).days in range(90, 93)
+
+
+def test_scarcity_filter_blocks_using_the_report_before_entry():
+    from research.funding_arb.scarcity import Published
+    from research.funding_arb.signals import Trade, apply_filters
+    t = Trade("NG", ("NG", "H", 2019), ("NG", "J", 2019), _date(2018, 9, 4), _date(2018, 12, 3))
+    apply_filters([t], Published({_date(2018, 8, 30): -0.19}), None)
+    assert t.blocked and "scorte gas" in t.blocked
+
+
+def test_signals_module_contains_no_order_code():
+    import inspect
+    from research.funding_arb import signals
+    src = inspect.getsource(signals)
+    for banned in ("placeOrder", "ib_async", "ib_insync", "MarketOrder", "LimitOrder", "submit_order"):
+        assert banned not in src
