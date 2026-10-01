@@ -6,8 +6,9 @@ connect to a broker and contains no order code, by design (CLAUDE.md,
 Boundaries). Orders, if any, are placed by a person.
 
 The rule (MEMORY.md §11-decies, the scarcity sections and §11-terdecies):
-* products: copper (HG) and natural gas (NG); feeder cattle (GF) is optional,
-  for larger accounts (it diversifies but triples the margin); rough rice (ZR)
+* products: copper (HG) and natural gas (NG); feeder cattle (GF) is PAUSED
+  (it diversifies but triples the margin: for accounts of ~15,000 $ or more,
+  enabled with --with-paused); rough rice (ZR)
   is dropped: its real bid/ask (~1,600 $ wide) exceeds its average gain;
 * for each liquid delivery month, SELL that contract and BUY the next liquid
   month, one contract each, from 180 days before the last day a retail account
@@ -39,9 +40,10 @@ from .fixed_rule_scan import ACTIVE
 from .futures_contracts import MONTH_CODES
 from .scarcity import EIA_STORAGE_URL, Published, parse_eia_storage, storage_deficit
 
-PRODUCTS = ("HG", "NG", "GF")
-#: Shown, but tagged optional: worth it only with the capital its margin needs.
-OPTIONAL = {"GF": "OPZIONALE: solo con capitale ≥ ~15.000 $ (margine ~1.835 $ a spread, fino a 4 aperti)"}
+PRODUCTS = ("HG", "NG")
+#: Tested and kept, but left out of the alerts until the account can carry the
+#: margin; --with-paused shows them, tagged.
+PAUSED = {"GF": "IN PAUSA: solo con capitale ≥ ~15.000 $ (margine ~1.835 $ a spread, fino a 4 aperti)"}
 NAMES = {"HG": "Rame COMEX", "NG": "Gas naturale NYMEX", "GF": "Bovini da ingrasso CME"}
 ENTRY_DAYS_BEFORE = 180
 HOLD_DAYS = 90
@@ -186,10 +188,11 @@ def apply_filters(trades: List[Trade], storage: Optional[Published]) -> None:
 
 
 def _tag(t: Trade) -> str:
-    return f" [{OPTIONAL[t.root]}]" if t.root in OPTIONAL else ""
+    return f" [{PAUSED[t.root]}]" if t.root in PAUSED else ""
 
 
-def report(today: date, days: int, trades: List[Trade], storage: Optional[Published]) -> str:
+def report(today: date, days: int, trades: List[Trade], storage: Optional[Published],
+           paused: Sequence[str] = ()) -> str:
     horizon = today + timedelta(days=days)
     trades = sorted(trades, key=lambda t: t.entry)
     to_open = [t for t in trades if today <= t.entry <= horizon]
@@ -197,6 +200,10 @@ def report(today: date, days: int, trades: List[Trade], storage: Optional[Publis
     open_now = [t for t in trades if t.entry < today < t.exit and not t.blocked]
     lines = [f"AVVISI SPREAD — {today.isoformat()} (prossimi {days} giorni). Solo avvisi: nessun ordine viene inviato.", ""]
     s = storage.as_of(today + timedelta(days=1)) if storage else None
+    for root in paused:
+        lines.append(f"{NAMES[root]}: {PAUSED[root]}. Riattivabile con --with-paused.")
+    if paused:
+        lines.append("")
     lines.append("Indicatori di scarsità (ultimo dato pubblicato):")
     lines.append(f"  gas, scorte EIA vs anni precedenti: {s:+.1%}" if s is not None else "  gas: dato non disponibile")
     lines.append("")
@@ -225,9 +232,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--date", type=date.fromisoformat, default=date.today())
     ap.add_argument("--days", type=int, default=7, help="look-ahead window for open/close alerts")
     ap.add_argument("--offline", action="store_true", help="skip the scarcity data downloads")
+    ap.add_argument("--with-paused", action="store_true", help=f"also show paused products ({' '.join(PAUSED)})")
     a = ap.parse_args(argv)
     years = range(a.date.year - 1, a.date.year + 2)
-    trades = [t for root in PRODUCTS for t in schedule(root, years)]
+    roots = PRODUCTS + tuple(PAUSED) if a.with_paused else PRODUCTS
+    trades = [t for root in roots for t in schedule(root, years)]
     storage = None
     if not a.offline:
         try:
@@ -235,7 +244,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         except RuntimeError as e:
             print(f"ATTENZIONE: scorte gas non scaricate ({e}); filtro NG non applicato", file=sys.stderr)
     apply_filters(trades, storage)
-    print(report(a.date, a.days, trades, storage))
+    print(report(a.date, a.days, trades, storage, () if a.with_paused else tuple(PAUSED)))
     return 0
 
 

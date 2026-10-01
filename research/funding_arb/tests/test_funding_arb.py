@@ -1453,15 +1453,18 @@ def test_scarcity_filter_blocks_using_the_report_before_entry():
     assert t.blocked and "scorte gas" in t.blocked
 
 
-def test_signals_drop_rice_and_tag_cattle_optional():
-    from research.funding_arb.signals import PRODUCTS, report, schedule
-    assert "ZR" not in PRODUCTS
+def test_signals_drop_rice_and_pause_cattle():
+    from research.funding_arb.signals import PAUSED, PRODUCTS, report, schedule
+    assert "ZR" not in PRODUCTS and "GF" not in PRODUCTS and "GF" in PAUSED
     trades = [t for r in PRODUCTS for t in schedule(r, [2026, 2027])]
-    text = report(_date(2026, 9, 21), 14, trades, None)
-    gf = [l for l in text.splitlines() if "Bovini" in l]
-    assert gf and all("OPZIONALE" in l for l in gf)
-    assert not any("OPZIONALE" in l for l in text.splitlines() if "Rame" in l or "Gas" in l)
+    text = report(_date(2026, 9, 21), 14, trades, None, tuple(PAUSED))
+    assert "IN PAUSA" in text.splitlines()[2] and "--with-paused" in text
+    assert not any("Bovini" in l for l in text.splitlines()[3:])
     assert "LIMITE a metà" in text
+    with_gf = trades + schedule("GF", [2026, 2027])
+    lines = report(_date(2026, 9, 21), 14, with_gf, None).splitlines()
+    gf = [l for l in lines if "Bovini" in l]
+    assert gf and all("IN PAUSA" in l for l in gf)
 
 
 def test_signals_module_contains_no_order_code():
